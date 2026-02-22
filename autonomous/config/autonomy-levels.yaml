@@ -1,0 +1,23 @@
+# Autonomy Levels | Path: autonomous/config/autonomy-levels.yaml
+tiers:
+  tier_1:
+    name: Fully Autonomous
+    actions: [research_prospect, score_prospect, tag_prospect_alternative, build_prospect_list, draft_email, draft_content, monitor_competitor, monitor_system_health, log_metrics, calculate_kpis, query_database_readonly, generate_recommendations, deduplicate_prospects, update_prospect_scores, classify_support_ticket]
+  tier_2:
+    name: Autonomous with Notification
+    notification_channel: daily_digest
+    actions: [send_follow_up_email, send_transactional_email, optimize_send_time, rotate_subject_line, segment_prospects, generate_daily_digest, generate_weekly_report, update_competitive_landscape_doc, send_nurture_email, resolve_known_support_issue]
+  tier_3:
+    name: Recommend and Wait
+    approval_channel: approval_queue
+    timeout_hours: 48
+    actions: [send_first_touch_email, respond_to_prospect_reply, change_landing_page_copy, create_new_prospect_segment, suggest_pricing_change, respond_to_sensitive_support, update_revenue_forecast, publish_content, propose_new_experiment, contact_low_score_prospect, escalate_unknown_support_issue]
+  tier_4:
+    name: Human Only
+    actions: [financial_transaction, change_pricing, legal_response, delete_data, access_credentials, binding_commitment, deploy_code, modify_database_schema, change_security_config, disable_safety_boundary, modify_autonomy_levels]
+earned_autonomy:
+  weeks_1_2: {mode: maximum_oversight, override_tier2_to_tier3: true}
+  weeks_3_4: {mode: trust_building, condition: "approval_rate >= 0.90", action_on_met: restore_tier_2}
+  month_2: {mode: expanded, candidates: [send_follow_up_email, send_nurture_email]}
+  month_3_plus: {mode: full_operations, target_founder_time: 25_minutes_per_day}
+revocation_triggers: [customer_complaint_about_automated_outreach, spam_complaint_or_blacklist, security_boundary_violation, contact_do_not_contact_prospect, rate_limit_exceeded, financial_impact_from_agent_error]

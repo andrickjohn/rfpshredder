@@ -1,0 +1,28 @@
+# Approval Gates | Path: autonomous/config/approval-gates.yaml
+approval_process:
+  delivery:
+    primary: daily_digest_email
+    urgent: immediate_email
+    dashboard: /app/approvals
+  actions: {approve: execute_immediately, approve_with_edits: apply_then_execute, reject: cancel_with_reason, defer: requeue_max_3, expire: cancel_after_48hrs}
+gates:
+  first_touch_email:
+    approver: founder
+    context: [prospect_profile, scores, alternative_tag, template_variant, personalized_text, quality_rating]
+    urgency: normal
+  prospect_reply_response:
+    approver: founder
+    context: [original_thread, reply_text, classification, drafted_response]
+    urgency: urgent
+  landing_page_change:
+    approver: founder
+    context: [current_copy, proposed_copy, reason, expected_impact]
+    urgency: normal
+  revenue_forecast_update:
+    approver: founder
+    context: [current_assumptions, proposed_changes, variance_analysis]
+    urgency: normal
+  content_publication:
+    approver: founder
+    context: [content_draft, platform, topic_rationale]
+    urgency: normal

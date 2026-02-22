@@ -1,0 +1,34 @@
+# Safety Boundaries | Path: autonomous/config/safety-boundaries.yaml
+email_limits:
+  max_emails_per_day: 50
+  max_follow_ups_per_prospect: 3
+  cooldown_between_emails_hours: 48
+  require_unsubscribe_link: true
+  max_emails_per_prospect_total: 4
+prospect_gates:
+  min_reachability_score: 4
+  min_intent_signal_score: 4
+  min_decision_speed_score: 4
+  low_score_action: move_to_nurture_list
+  require_current_alternative_tag: true
+  require_personalization_hook: true
+communication_safety:
+  sentiment_floor: neutral
+  never_contact_hostile_prospects: true
+  never_contact_unsubscribed: true
+  check_do_not_contact_before_every_action: true
+data_safety:
+  pii_handling: hash_before_logging
+  never_store_document_content: true
+  audit_trail_retention_days: 90
+financial_safety:
+  agents_cannot_make_purchases: true
+  agents_cannot_change_pricing: true
+system_safety:
+  agents_cannot_deploy_code: true
+  agents_cannot_modify_database_schema: true
+  agents_cannot_modify_this_file: true
+emergency_stop:
+  enabled: true
+  triggers: [unsubscribe_10_per_day, any_spam_complaint, stripe_fraud_dispute, error_rate_50pct_5min, tier_4_attempted, safety_violated_3x_24hr]
+  actions: [pause_all_agents, cancel_queued_emails, set_all_tier_4, notify_founder]

@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npx vitest:*)",
+      "Bash(timeout 15 npx next:*)",
+      "Bash(npm install pdf-parse 2>&1 && npm install -D @types/pdf-parse 2>&1)",
+      "Bash(npm install:*)",
+      "Bash(echo dev server stopped:*)",
+      "Bash(curl:*)"
+    ]
+  }
+}

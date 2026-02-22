@@ -1,0 +1,23 @@
+project:
+  name: rfp-shredder
+  description: AI-powered compliance matrix generator for government contractors
+  version: 0.1.0
+build:
+  brief: claude.md
+  stage1_outputs: [docs/, qa/, .agents/, .claude/, prompts/, outreach/, autonomous/, workflows/]
+  stage2_outputs: [src/, api/, scripts/, qa/tests/, qa/screenshots/, qa/lighthouse/]
+runtime:
+  framework: nextjs
+  node_version: "20"
+  python_version: "3.11"
+  package_manager: npm
+  test_runner: vitest
+  e2e_runner: playwright
+quality:
+  lighthouse: {performance: 80, accessibility: 90, seo: 80, best_practices: 80}
+  coverage: {unit: 80, security_critical: 100}
+  extraction: {recall: 95, precision: 90, obligation_accuracy: 95, crossref_accuracy: 85}
+tracking:
+  progress_file: PROGRESS.md
+  lessons_file: LESSONS.md
+  test_results: qa/TEST-RESULTS.md
