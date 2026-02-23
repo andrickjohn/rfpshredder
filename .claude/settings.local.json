@@ -8,7 +8,10 @@
       "Bash(echo dev server stopped:*)",
       "Bash(curl:*)",
       "Bash(tail:*)",
-      "Bash(npx vercel:*)"
+      "Bash(npx vercel:*)",
+      "Bash(git push origin main)",
+      "Bash(npx next build)",
+      "Bash(git add -A)"
     ]
   }
 }

@@ -10,6 +10,7 @@ import { TrustBanner } from '@/components/dashboard/trust-banner';
 import { ProcessingFlow } from '@/components/dashboard/processing-flow';
 import { UploadForm } from '@/components/dashboard/upload-form';
 import { ShredHistory } from '@/components/dashboard/shred-history';
+import { DashboardClientWrapper } from '@/components/dashboard/dashboard-client-wrapper';
 import { canShred } from '@/lib/billing/subscription';
 
 export default async function DashboardPage() {
@@ -38,7 +39,8 @@ export default async function DashboardPage() {
     && (profile?.trial_shreds_used ?? 0) >= 1;
 
   return (
-    <div className="space-y-6">
+    <DashboardClientWrapper>
+      <div className="space-y-6">
       <WelcomeHeader
         fullName={profile?.full_name ?? null}
         status={profile?.subscription_status ?? 'trial'}
@@ -54,8 +56,6 @@ export default async function DashboardPage() {
 
       <TrustBanner />
 
-      <ProcessingFlow />
-
       <div>
         <h3 className="text-lg font-semibold text-gray-900 mb-3">Shred an RFP</h3>
         <UploadForm canShred={userCanShred} isTrialExhausted={isTrialExhausted} />
@@ -65,6 +65,10 @@ export default async function DashboardPage() {
         <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Activity</h3>
         <ShredHistory />
       </div>
-    </div>
+
+        {/* Processing pipeline at bottom - shows live progress during upload */}
+        <ProcessingFlow />
+      </div>
+    </DashboardClientWrapper>
   );
 }

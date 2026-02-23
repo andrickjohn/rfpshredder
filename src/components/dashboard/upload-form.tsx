@@ -1,11 +1,12 @@
 // src/components/dashboard/upload-form.tsx
 // Purpose: RFP upload form with drag-and-drop, progress, error handling
-// Dependencies: react
+// Dependencies: react, processing-context
 // Test spec: qa/test-specs/full-integration.md
 
 'use client';
 
 import { useState, useRef } from 'react';
+import { useProcessing } from '@/contexts/processing-context';
 
 interface UploadFormProps {
   canShred: boolean;
@@ -30,6 +31,7 @@ export function validateUploadFile(file: { name: string; size: number }): string
 }
 
 export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
+  const { setCurrentStep, reset } = useProcessing();
   const [file, setFile] = useState<File | null>(null);
   const [status, setStatus] = useState<'idle' | 'processing' | 'success' | 'error'>('idle');
   const [error, setError] = useState<string | null>(null);
@@ -52,19 +54,46 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
     if (!file) return;
 
     setStatus('processing');
-    setProgress('Uploading and processing your RFP... This may take 1-2 minutes.');
     setError(null);
+    reset(); // Reset progress to step 0
 
     try {
       const formData = new FormData();
       formData.append('file', file);
+
+      // Step 1: Upload (immediate)
+      setCurrentStep(1);
+      setProgress('Uploading your RFP...');
 
       const response = await fetch('/api/shred', {
         method: 'POST',
         body: formData,
       });
 
+      // Simulate progress steps during processing
+      // In a real streaming implementation, the backend would send progress events
+      const progressSteps = [
+        { step: 2, message: 'Parsing document structure...', delay: 2000 },
+        { step: 3, message: 'Extracting Section L & M requirements...', delay: 5000 },
+        { step: 4, message: 'Classifying obligation levels...', delay: 2000 },
+        { step: 5, message: 'Generating cross-references...', delay: 2000 },
+        { step: 6, message: 'Building Excel compliance matrix...', delay: 2000 },
+      ];
+
+      // Start progress simulation
+      let stepIndex = 0;
+      const progressInterval = setInterval(() => {
+        if (stepIndex < progressSteps.length) {
+          const { step, message } = progressSteps[stepIndex];
+          setCurrentStep(step);
+          setProgress(message);
+          stepIndex++;
+        }
+      }, 3000); // Update every 3 seconds
+
       if (!response.ok) {
+        clearInterval(progressInterval);
+        reset();
         const data = await response.json();
         setError(data.error?.message || 'An error occurred while processing your RFP.');
         setStatus('error');
@@ -72,6 +101,12 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
       }
 
       const blob = await response.blob();
+      clearInterval(progressInterval);
+
+      // Step 7: Download
+      setCurrentStep(7);
+      setProgress('Downloading compliance matrix...');
+
       const url = URL.createObjectURL(blob);
       const a = document.createElement('a');
       a.href = url;
@@ -81,10 +116,16 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
       document.body.removeChild(a);
       URL.revokeObjectURL(url);
 
+      // Complete - all steps done
+      setCurrentStep(8);
       setStatus('success');
       setProgress('');
       setFile(null);
+
+      // Reset after 3 seconds
+      setTimeout(() => reset(), 3000);
     } catch {
+      reset();
       setError('Unable to connect to the server. Please check your connection and try again.');
       setStatus('error');
     }
