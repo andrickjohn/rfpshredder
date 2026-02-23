@@ -57,7 +57,7 @@ export async function POST() {
     }
 
     return NextResponse.json({ url });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: { code: 'CHECKOUT_ERROR', message: 'Unable to create checkout session. Please try again.' } },
       { status: 500 }

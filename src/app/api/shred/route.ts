@@ -192,7 +192,7 @@ export async function POST(request: Request) {
     parseResult = null;
 
     // 13. Return Excel file
-    return new NextResponse(excelBuffer, {
+    return new NextResponse(new Uint8Array(excelBuffer), {
       status: 200,
       headers: {
         'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',

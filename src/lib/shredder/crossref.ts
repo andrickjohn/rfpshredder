@@ -169,9 +169,9 @@ function checkKeywordSimilarity(lText: string, mText: string): number {
   if (lKeywords.size === 0 || mKeywords.size === 0) return 0;
 
   let overlap = 0;
-  for (const kw of lKeywords) {
+  lKeywords.forEach((kw) => {
     if (mKeywords.has(kw)) overlap++;
-  }
+  });
 
   const union = lKeywords.size + mKeywords.size - overlap;
   return union === 0 ? 0 : overlap / union;

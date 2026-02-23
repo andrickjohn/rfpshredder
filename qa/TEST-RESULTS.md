@@ -210,3 +210,37 @@
 
 ### Issues Found and Fixed
 - None. All 28 Phase 7 tests passed on first run.
+
+---
+
+## Phase 8: Launch Readiness
+
+### Unit Tests
+**Run date**: 2026-02-22
+**Result**: 195/195 PASSED (cumulative across all phases)
+
+| Suite | File | Tests | Status |
+|---|---|---|---|
+| health check endpoint | health.test.ts | 3 | PASSED |
+| trial nudge cron | health.test.ts | 1 | PASSED |
+
+### Key Tests Verifying Core Spec Requirements
+- **Health healthy**: All env vars set → status "healthy", HTTP 200
+- **Health degraded**: Optional services missing → status "degraded", HTTP 200
+- **Health unhealthy**: Supabase missing → status "unhealthy", HTTP 503
+- **Cron auth**: Missing/wrong authorization header → HTTP 401
+
+### Production Verification
+- `/api/health` returns `{ status: "healthy" }` with all 4 services OK
+- All 7 security headers present in production response
+- Vercel Cron configured for trial_nudge (daily 09:00 UTC)
+- Landing page, dashboard, all API routes respond correctly
+
+### Build Errors Fixed (Lesson 7)
+1. **Unused catch variables**: 3 billing routes — `catch (error)` → `catch {}`
+2. **Buffer not BodyInit**: shred route — `excelBuffer` → `new Uint8Array(excelBuffer)`
+3. **Promise vs PromiseLike**: subscription.ts WebhookSupabaseClient interface
+4. **Map/Set iteration**: rate-limit.ts, crossref.ts, deduplicator.ts — `for...of` → `.forEach()`
+
+### Issues Found and Fixed
+- Resend mock in cron test: importing cron route triggers `send.ts` → `new Resend()` fails without API key. Fixed by mocking `resend` and `@/lib/email/send` before import.

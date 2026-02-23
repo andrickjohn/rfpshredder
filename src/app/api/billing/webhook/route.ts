@@ -59,7 +59,7 @@ export async function POST(request: Request) {
     await sendWebhookEmails(event, supabase);
 
     return NextResponse.json({ received: true });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: { code: 'WEBHOOK_ERROR', message: 'Webhook processing failed.' } },
       { status: 500 }

@@ -1,12 +1,15 @@
 // src/app/dashboard/page.tsx
-// Purpose: Protected dashboard — upload RFPs, view history, manage subscription
-// Dependencies: supabase/server, dashboard components, billing/subscription
+// Purpose: Premium dashboard — stats, flow diagram, upload, history
+// Dependencies: supabase/server, all dashboard components, billing/subscription
 // Test spec: qa/test-specs/full-integration.md
 
 import { createClient } from '@/lib/supabase/server';
+import { WelcomeHeader } from '@/components/dashboard/welcome-header';
+import { StatsCards } from '@/components/dashboard/stats-cards';
+import { TrustBanner } from '@/components/dashboard/trust-banner';
+import { ProcessingFlow } from '@/components/dashboard/processing-flow';
 import { UploadForm } from '@/components/dashboard/upload-form';
 import { ShredHistory } from '@/components/dashboard/shred-history';
-import { SubscriptionStatus } from '@/components/dashboard/subscription-status';
 import { canShred } from '@/lib/billing/subscription';
 
 export default async function DashboardPage() {
@@ -15,9 +18,20 @@ export default async function DashboardPage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('subscription_status, subscription_tier, trial_shreds_used')
+    .select('subscription_status, subscription_tier, trial_shreds_used, full_name')
     .eq('id', user!.id)
     .single();
+
+  // Aggregate stats from shred history
+  const { data: shredLogs } = await supabase
+    .from('shred_log')
+    .select('requirement_count, processing_time_ms, status');
+
+  const successLogs = shredLogs?.filter((s) => s.status === 'success') ?? [];
+  const totalShreds = successLogs.length;
+  const totalRequirements = successLogs.reduce((sum, s) => sum + (s.requirement_count ?? 0), 0);
+  // Estimate: each shred saves ~14 hours of manual compliance matrix work
+  const timeSavedHours = totalShreds > 0 ? Math.round(totalShreds * 14) : 0;
 
   const userCanShred = profile ? canShred(profile) : false;
   const isTrialExhausted = profile?.subscription_status === 'trial'
@@ -25,26 +39,30 @@ export default async function DashboardPage() {
 
   return (
     <div className="space-y-6">
-      <h2 className="text-2xl font-bold text-gray-900">Dashboard</h2>
+      <WelcomeHeader
+        fullName={profile?.full_name ?? null}
+        status={profile?.subscription_status ?? 'trial'}
+        tier={profile?.subscription_tier ?? 'free'}
+        trialShredsUsed={profile?.trial_shreds_used ?? 0}
+      />
 
-      {profile && (
-        <SubscriptionStatus
-          status={profile.subscription_status}
-          tier={profile.subscription_tier}
-          trialShredsUsed={profile.trial_shreds_used}
-        />
-      )}
+      <StatsCards
+        totalShreds={totalShreds}
+        totalRequirements={totalRequirements}
+        timeSavedHours={timeSavedHours}
+      />
+
+      <TrustBanner />
+
+      <ProcessingFlow />
 
       <div>
         <h3 className="text-lg font-semibold text-gray-900 mb-3">Shred an RFP</h3>
-        <UploadForm
-          canShred={userCanShred}
-          isTrialExhausted={isTrialExhausted}
-        />
+        <UploadForm canShred={userCanShred} isTrialExhausted={isTrialExhausted} />
       </div>
 
       <div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Shreds</h3>
+        <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Activity</h3>
         <ShredHistory />
       </div>
     </div>

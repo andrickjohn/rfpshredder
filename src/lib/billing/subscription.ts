@@ -105,7 +105,7 @@ export async function createPortalSession(
 interface WebhookSupabaseClient {
   from(table: string): {
     update(values: Record<string, unknown>): {
-      eq(column: string, value: string): Promise<{ error: unknown }>;
+      eq(column: string, value: string): PromiseLike<{ error: unknown }>;
     };
   };
 }

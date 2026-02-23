@@ -76,9 +76,9 @@ export function computeSimilarity(textA: string, textB: string): number {
   if (wordsA.size === 0 || wordsB.size === 0) return 0;
 
   let intersection = 0;
-  for (const word of wordsA) {
+  wordsA.forEach((word) => {
     if (wordsB.has(word)) intersection++;
-  }
+  });
 
   const union = wordsA.size + wordsB.size - intersection;
   return union === 0 ? 0 : intersection / union;

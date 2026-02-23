@@ -6,7 +6,9 @@
       "Bash(npm install pdf-parse 2>&1 && npm install -D @types/pdf-parse 2>&1)",
       "Bash(npm install:*)",
       "Bash(echo dev server stopped:*)",
-      "Bash(curl:*)"
+      "Bash(curl:*)",
+      "Bash(tail:*)",
+      "Bash(npx vercel:*)"
     ]
   }
 }

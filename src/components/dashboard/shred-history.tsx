@@ -16,14 +16,14 @@ export async function ShredHistory() {
 
   if (!shreds || shreds.length === 0) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8 text-center">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
         <p className="text-gray-400 text-sm">No shreds yet. Upload your first RFP above.</p>
       </div>
     );
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md overflow-hidden">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-left">
           <thead>

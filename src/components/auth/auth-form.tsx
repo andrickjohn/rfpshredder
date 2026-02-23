@@ -42,8 +42,7 @@ export function AuthForm({ mode }: AuthFormProps) {
           setError(signUpError.message);
           return;
         }
-        router.push('/dashboard');
-        router.refresh();
+        setMessage('Account created! Check your email to confirm your address, then sign in.');
       } else if (mode === 'login') {
         const { error: signInError } = await supabase.auth.signInWithPassword({
           email: email.trim().toLowerCase(),

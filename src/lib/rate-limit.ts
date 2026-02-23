@@ -19,11 +19,11 @@ function startCleanup() {
   if (cleanupTimer) return;
   cleanupTimer = setInterval(() => {
     const now = Date.now();
-    for (const [key, entry] of rateLimitStore) {
+    rateLimitStore.forEach((entry, key) => {
       if (now > entry.resetAt) {
         rateLimitStore.delete(key);
       }
-    }
+    });
   }, CLEANUP_INTERVAL_MS);
   // Allow Node process to exit even if timer is running
   if (cleanupTimer && typeof cleanupTimer === 'object' && 'unref' in cleanupTimer) {

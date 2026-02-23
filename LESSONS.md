@@ -66,3 +66,14 @@
 - **Fix applied**: Changed mock to `class MockResend { emails = { send: mockSend }; }`
 - **Prevention rule**: When mocking a class that's instantiated with `new`, use actual class syntax in vi.mock, not vi.fn().mockImplementation().
 - **Applies to**: Any vitest mock of npm packages that export classes (Stripe, Resend, etc.)
+
+---
+
+## Lesson 7: Vercel production build is stricter than local dev and vitest
+- **Date**: 2026-02-22
+- **Component**: Build / deployment
+- **What happened**: Vercel build failed on 4 issues that never surfaced in `next dev` or `vitest run`: (1) unused `error` variables in catch blocks, (2) `Buffer` not assignable to `BodyInit` in NextResponse, (3) `Promise` vs `PromiseLike` for Supabase's PostgrestFilterBuilder, (4) `for...of` on Map/Set without `downlevelIteration`
+- **Root cause**: Vercel runs `next build` which enables ESLint + strict TypeScript type checking. Local dev (`next dev`) skips type checking. Vitest uses its own tsconfig which may differ.
+- **Fix applied**: (1) `catch {}` instead of `catch (error) {}`, (2) `new Uint8Array(buffer)` for NextResponse body, (3) `PromiseLike` instead of `Promise` in interface, (4) `.forEach()` instead of `for...of` on Map/Set
+- **Prevention rule**: Always run `npx next build` locally before deploying to Vercel. It catches ESLint and type errors that dev mode ignores.
+- **Applies to**: All Vercel deployments, all Next.js projects

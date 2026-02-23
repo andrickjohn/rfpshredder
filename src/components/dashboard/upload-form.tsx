@@ -98,7 +98,7 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
 
   if (!canShred) {
     return (
-      <div className="bg-white rounded-lg shadow-md p-8 text-center">
+      <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
         <h3 className="text-lg font-semibold text-gray-900 mb-2">
           {isTrialExhausted ? 'Free trial used' : 'Subscription required'}
         </h3>
@@ -122,7 +122,7 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
   }
 
   return (
-    <div className="bg-white rounded-lg shadow-md p-8">
+    <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8">
       <div
         onDrop={handleDrop}
         onDragOver={(e) => e.preventDefault()}

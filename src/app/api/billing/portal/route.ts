@@ -54,7 +54,7 @@ export async function POST() {
     );
 
     return NextResponse.json({ url });
-  } catch (error) {
+  } catch {
     return NextResponse.json(
       { error: { code: 'PORTAL_ERROR', message: 'Unable to open billing portal. Please try again.' } },
       { status: 500 }

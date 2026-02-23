@@ -240,3 +240,29 @@
 - CSP uses 'unsafe-inline' and 'unsafe-eval' for Next.js compatibility. This is a known Next.js limitation — nonce-based CSP would be more secure but requires custom server configuration. Acceptable for MVP.
 - Dashboard currently has no real-time progress updates during shred processing. The processing indicator shows but doesn't stream progress from the server. WebSocket or SSE streaming could be added post-MVP.
 - Shred history doesn't have pagination — limited to last 10 entries. Add pagination when users accumulate more history.
+
+---
+
+## Phase 8: Launch Readiness — 2026-02-22
+
+### Security
+- [x] Health endpoint exposes no secrets — only service names and ok/error/unconfigured status
+- [x] Cron endpoint requires `CRON_SECRET` bearer token — rejects without valid auth
+- [x] No sensitive data in health response (no API keys, URLs, or internal details)
+- [x] Trial nudge queries profiles by status/timing only — no document content
+
+### Performance
+- [x] Health check is O(1) — env var checks only, no API calls or DB queries
+- [x] Trial nudge uses time-windowed query (23-25hr window) — small result set
+
+### Quality
+- [x] File headers on all 3 new files
+- [x] Named exports throughout
+- [x] Health endpoint returns structured JSON with version, timestamp, checks
+- [x] Cron endpoint returns sent count and checked count for monitoring
+- [x] vercel.json cron schedule configured (daily 09:00 UTC)
+- [x] Launch plan covers pre-launch checklist, Day 1-7 plan, env var reference, rollback procedure
+
+### Findings
+- Health check does not ping Supabase/Stripe/Anthropic APIs — only checks env vars are set. A deeper health check (actual API ping) could be added post-MVP but adds latency and potential rate limit issues.
+- Trial nudge cron runs once daily. Users who sign up just after the 09:00 UTC window won't get nudged until the next day (~47hr instead of 24hr). Acceptable for MVP.
