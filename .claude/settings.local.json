@@ -1,17 +1,11 @@
 {
   "permissions": {
     "allow": [
-      "Bash(npx vitest:*)",
-      "Bash(timeout 15 npx next:*)",
-      "Bash(npm install pdf-parse 2>&1 && npm install -D @types/pdf-parse 2>&1)",
-      "Bash(npm install:*)",
-      "Bash(echo dev server stopped:*)",
-      "Bash(curl:*)",
-      "Bash(tail:*)",
-      "Bash(npx vercel:*)",
-      "Bash(git push origin main)",
-      "Bash(npx next build)",
-      "Bash(git add -A)"
-    ]
+      "Bash(git add docs/LAUNCH-PLATFORM-GUIDE.md)",
+      "Bash(git commit -m \"Add comprehensive launch platform access guide\")",
+      "Bash(git commit -m \"Improve upload error logging and handling\n\n- Log actual error details to console for debugging\n- Show specific HTTP status codes in error messages\n- Catch and display fetch errors properly\n- Help diagnose connection issues vs API errors\")"
+    ],
+    "deny": [],
+    "ask": []
   }
 }

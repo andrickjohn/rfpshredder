@@ -94,8 +94,14 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
       if (!response.ok) {
         clearInterval(progressInterval);
         reset();
-        const data = await response.json();
-        setError(data.error?.message || 'An error occurred while processing your RFP.');
+        console.error('API error response:', response.status, response.statusText);
+        try {
+          const data = await response.json();
+          console.error('API error details:', data);
+          setError(data.error?.message || `Error ${response.status}: ${response.statusText}`);
+        } catch {
+          setError(`Server error: ${response.status} ${response.statusText}`);
+        }
         setStatus('error');
         return;
       }
@@ -124,9 +130,11 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
 
       // Reset after 3 seconds
       setTimeout(() => reset(), 3000);
-    } catch {
+    } catch (err) {
       reset();
-      setError('Unable to connect to the server. Please check your connection and try again.');
+      console.error('Upload error:', err);
+      const errorMessage = err instanceof Error ? err.message : 'Unknown error';
+      setError(`Unable to connect to the server: ${errorMessage}. Please check your connection and try again.`);
       setStatus('error');
     }
   }
