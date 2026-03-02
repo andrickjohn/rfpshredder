@@ -7,13 +7,17 @@
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 
-const tabs = [
+const defaultTabs = [
   { label: 'Dashboard', href: '/dashboard' },
   { label: 'Settings', href: '/dashboard/settings' },
 ];
 
-export function DashboardNav() {
+export function DashboardNav({ isAdmin }: { isAdmin?: boolean }) {
   const pathname = usePathname();
+
+  const tabs = isAdmin
+    ? [...defaultTabs, { label: 'Admin', href: '/dashboard/admin' }]
+    : defaultTabs;
 
   return (
     <nav className="flex items-center gap-1" aria-label="Dashboard navigation">
@@ -25,11 +29,10 @@ export function DashboardNav() {
           <Link
             key={tab.href}
             href={tab.href}
-            className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${
-              isActive
+            className={`px-3 py-2 text-sm font-medium rounded-md transition-colors ${isActive
                 ? 'text-[#1B365D] bg-gray-100'
                 : 'text-gray-500 hover:text-gray-700 hover:bg-gray-50'
-            }`}
+              }`}
           >
             {tab.label}
           </Link>

@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     // 3. Check subscription / trial status
     const { data: profile } = await supabase
       .from('profiles')
-      .select('subscription_status, subscription_tier, trial_shreds_used')
+      .select('subscription_status, subscription_tier, trial_shreds_used, email')
       .eq('id', user.id)
       .single();
 
@@ -64,21 +64,46 @@ export async function POST(request: Request) {
       );
     }
 
+    const isSuperAdmin = profile.email === 'admin@automatemomentum.com';
     const isTrial = profile.subscription_status === 'trial';
     const isActive = profile.subscription_status === 'active';
+    const tier = profile.subscription_tier; // 'free', 'solo', 'team', 'enterprise', 'super'
 
-    if (isTrial && profile.trial_shreds_used >= MAX_TRIAL_SHREDS) {
-      return NextResponse.json(
-        { error: { code: 'TRIAL_EXHAUSTED', message: 'Your free trial shred has been used. Subscribe to continue shredding RFPs.' } },
-        { status: 403 }
-      );
-    }
+    // Super Admin bypasses all checks
+    if (!isSuperAdmin) {
+      if (isTrial && profile.trial_shreds_used >= MAX_TRIAL_SHREDS) {
+        return NextResponse.json(
+          { error: { code: 'TRIAL_EXHAUSTED', message: 'Your free trial shred has been used. Subscribe to continue shredding RFPs.' } },
+          { status: 403 }
+        );
+      }
 
-    if (!isTrial && !isActive) {
-      return NextResponse.json(
-        { error: { code: 'SUBSCRIPTION_REQUIRED', message: 'An active subscription is required. Please subscribe to continue.' } },
-        { status: 403 }
-      );
+      if (!isTrial && !isActive) {
+        return NextResponse.json(
+          { error: { code: 'SUBSCRIPTION_REQUIRED', message: 'An active subscription is required. Please subscribe to continue.' } },
+          { status: 403 }
+        );
+      }
+
+      if (isActive && tier === 'solo') {
+        // Enforce 10 shreds per month
+        const startOfMonth = new Date();
+        startOfMonth.setDate(1);
+        startOfMonth.setHours(0, 0, 0, 0);
+
+        const { count, error: countErr } = await supabase
+          .from('shred_log')
+          .select('*', { count: 'exact', head: true })
+          .eq('user_id', user.id)
+          .gte('created_at', startOfMonth.toISOString());
+
+        if (!countErr && count !== null && count >= 10) {
+          return NextResponse.json(
+            { error: { code: 'MONTHLY_LIMIT_EXCEEDED', message: 'You have reached your limit of 10 shreds per month on the Solo plan.' } },
+            { status: 403 }
+          );
+        }
+      }
     }
 
     // 4. Read uploaded file
@@ -113,6 +138,19 @@ export async function POST(request: Request) {
 
     // ZERO RETENTION: release file buffer immediately after parsing
     fileBuffer = null;
+
+    // PAGE LIMIT ENFORCEMENT
+    const totalPages = parseResult.totalPages;
+    if (!isSuperAdmin) {
+      if (tier === 'solo' && totalPages > 300) {
+        parseResult = null;
+        return NextResponse.json(
+          { error: { code: 'PAGE_LIMIT_EXCEEDED', message: `The Solo plan allows up to 300 pages per document. This document is ${totalPages} pages. Please upgrade to process larger files.` } },
+          { status: 400 }
+        );
+      }
+      // Assuming free/trial could also be capped, but let's stick to user requirement: 300 pages for level 2.
+    }
 
     // 7. Detect sections
     const sections = detectSections(parseResult.pages);

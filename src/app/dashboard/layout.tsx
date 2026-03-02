@@ -33,7 +33,7 @@ export default async function DashboardLayout({
                 Beta
               </span>
             </div>
-            <DashboardNav />
+            <DashboardNav isAdmin={user?.email === 'admin@automatemomentum.com'} />
             <div className="flex items-center gap-3">
               <span className="text-sm text-gray-500 hidden sm:inline">{user.email}</span>
               <Link
