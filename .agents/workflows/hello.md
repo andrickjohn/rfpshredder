@@ -1,26 +1,41 @@
 ---
-description: Hello — orient yourself, check project health, and greet the session
+description: Hello - orient yourself, check project health, and greet the session
 ---
 
-# /hello — Session Start & Project Orientation
+# /hello - Start a Session
 
-Run this at the start of every session to get your bearings.
+Orient the session, review messages, and ensure a clean working state.
 
 ## Steps
 
-1. Read `claude.md` for project context and current objectives
-2. Read `PROGRESS.md` for the latest milestone status
-3. Read `LESSONS.md` for known pitfalls to avoid
-4. Run a quick health check:
-   ```
-   cd /Users/john/Projects/rfpshredder && git status && git log --oneline -5
-   ```
+1. Greet the user with an "Aloha" and a welcoming message.
+
+2. Check if `.message_in_a_bottle.txt` exists and read it:
+// turbo-all
+```bash
+if [ -f .message_in_a_bottle.txt ]; then cat .message_in_a_bottle.txt; else echo "No message in a bottle found."; fi
+```
+- If there's a message, read its contents to the user to help explain what to do next.
+
+3. Read `claude.md` for project context, `PROGRESS.md` for the latest milestone status, and `LESSONS.md` for known pitfalls.
+
+4. Check the radar for strange behavior or divergence:
+// turbo-all
+```bash
+git fetch origin > /dev/null 2>&1
+git status
+```
+
 5. Check for any `.env.local` issues (confirm required keys are present without printing values):
-   ```
-   grep -E "^(NEXT_PUBLIC|SUPABASE|STRIPE|OPENAI|RESEND)" /Users/john/Projects/rfpshredder/.env.local | cut -d= -f1
-   ```
-6. Report back to the user:
-   - Current branch and last 5 commits
-   - Any uncommitted changes
-   - Which env keys are configured
-   - Your understanding of what to work on next based on PROGRESS.md
+// turbo-all
+```bash
+grep -E "^(NEXT_PUBLIC|SUPABASE|STRIPE|OPENAI|RESEND)" .env.local | cut -d= -f1 || echo "No .env.local found"
+```
+
+6. Ensure the local development server is running cleanly:
+// turbo-all
+```bash
+lsof -i :3000 | awk 'NR!=1 {print $2}' | xargs -r kill -9 && pkill -9 -f "next dev" || true && npm run dev &
+```
+
+7. Report back to the user with the git status, env key status, your understanding of what to work on next, and let them know you're ready to launch!
