@@ -19,14 +19,16 @@ export function SamScraperClient() {
         setLogs((prev) => [...prev, msg]);
     };
 
-    const startScrape = async () => {
+    const startScrape = async (mode: 'api' | 'ui') => {
         setLoading(true);
         setLogs([]);
         setResults([]);
-        addLog('Starting SAM.gov scraper...');
+
+        const endpoint = mode === 'api' ? '/api/admin/scrape-sam' : '/api/admin/scrape-sam-ui';
+        addLog(`Starting SAM.gov scraper via ${mode.toUpperCase()} (${endpoint})...`);
 
         try {
-            const res = await fetch('/api/admin/scrape-sam', { method: 'POST' });
+            const res = await fetch(endpoint, { method: 'POST' });
 
             const reader = res.body?.getReader();
             const decoder = new TextDecoder();
@@ -70,13 +72,32 @@ export function SamScraperClient() {
 
     return (
         <div className="space-y-6">
-            <button
-                onClick={startScrape}
-                disabled={loading}
-                className="px-4 py-2 bg-[#1B365D] text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#152a48] transition-colors"
-            >
-                {loading ? 'Scraping...' : 'Find 3 Sample PDFs'}
-            </button>
+            <div className="flex flex-col sm:flex-row gap-4 items-center bg-blue-50/50 p-4 rounded-lg border border-blue-100">
+                <button
+                    onClick={() => startScrape('api')}
+                    disabled={loading}
+                    className="w-full sm:w-auto px-4 py-2 bg-[#1B365D] text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#152a48] transition-colors"
+                >
+                    {loading ? 'Scraping...' : 'Mode: SAM API Scraper'}
+                </button>
+                <div className="text-sm text-gray-500 text-center sm:text-left">
+                    <strong>Standard API:</strong> Uses your <code>SAM_GOV_API_KEY</code>. Reliable but subject to extreme 429 Rate Limits from SAM.gov.
+                </div>
+            </div>
+
+            <div className="flex flex-col sm:flex-row gap-4 items-center bg-purple-50/50 p-4 rounded-lg border border-purple-100">
+                <button
+                    onClick={() => startScrape('ui')}
+                    disabled={loading}
+                    className="w-full sm:w-auto px-4 py-2 bg-purple-600 text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors"
+                >
+                    {loading ? 'Scraping...' : 'Mode: Local UI Navigator'}
+                </button>
+                <div className="text-sm text-gray-500 text-center sm:text-left">
+                    <strong>Browser Engine:</strong> Bypasses API limits by launching a hidden Chrome window and clicking links like a human.
+                    <span className="block mt-1 text-purple-700 font-medium">⚠️ Only works when running RFP Shredder locally (localhost:3000), not on Vercel.</span>
+                </div>
+            </div>
 
             <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
                 {/* Logs */}
