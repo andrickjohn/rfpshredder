@@ -22,8 +22,8 @@ export function SamScraperClient() {
 
     // Filters
     const [naics, setNaics] = useState('541511, 541512, 541519, 511210, 236220');
-    const [keywords, setKeywords] = useState('section l, section m, schedule l, schedule m');
-    const [lookbackDays, setLookbackDays] = useState('90');
+    const [keywords, setKeywords] = useState('section l, section m, schedule l, schedule m, instructions to offerors, evaluation criteria, evaluation factors');
+    const [lookbackDays, setLookbackDays] = useState('180');
 
     // History
     type RunHistoryEntry = {
