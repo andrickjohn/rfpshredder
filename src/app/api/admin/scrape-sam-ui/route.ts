@@ -7,7 +7,7 @@ import path from 'path';
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-export async function POST() {
+export async function POST(req: Request) {
     try {
         const supabase = await createClient();
         const { data: { user } } = await supabase.auth.getUser();
@@ -15,6 +15,16 @@ export async function POST() {
         if (!user || user.email !== 'admin@automatemomentum.com') {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
         }
+
+        let body: Record<string, unknown> = {};
+        try {
+            body = await req.json() as Record<string, unknown>;
+        } catch {
+            // body is optional
+        }
+
+        const naicsCodes: string[] = (Array.isArray(body.naicsCodes) ? body.naicsCodes : null) || ['541511', '541512', '541519', '511210', '236220'];
+        const keywords: string[] = (Array.isArray(body.keywords) ? body.keywords : null) || ['section l', 'section m', 'schedule l', 'schedule m'];
 
         if (process.env.VERCEL) {
             // Cannot run puppeteer heavy scripts on Vercel easily
@@ -30,7 +40,13 @@ export async function POST() {
                 sendJSON({ type: 'log', message: 'Starting Local UI Scraper Process...' });
 
                 const scriptPath = path.join(process.cwd(), 'scripts', 'scrape-sam-ui.js');
-                const child = spawn('node', [scriptPath]);
+                const child = spawn('node', [scriptPath], {
+                    env: {
+                        ...process.env,
+                        TARGET_NAICS: naicsCodes.join(','),
+                        TARGET_KEYWORDS: keywords.join(',')
+                    }
+                });
 
                 child.stdout.on('data', (data) => {
                     const lines = data.toString().split('\n');

@@ -5,7 +5,12 @@ const path = require('path');
 const pdfParse = require('pdf-parse');
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'sam_samples');
-const NAICS_CODES = ['541511', '541512', '541519', '511210', '236220'];
+const NAICS_CODES = process.env.TARGET_NAICS
+    ? process.env.TARGET_NAICS.split(',')
+    : ['541511', '541512', '541519', '511210', '236220'];
+const KEYWORDS = process.env.TARGET_KEYWORDS
+    ? process.env.TARGET_KEYWORDS.split(',')
+    : ['section l', 'section m', 'schedule l', 'schedule m'];
 
 async function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -108,7 +113,7 @@ async function scrapeSamUI() {
                         continue;
                     }
 
-                    if (text.includes('section l') || text.includes('section m') || text.includes('schedule l') || text.includes('schedule m')) {
+                    if (KEYWORDS.some(kw => text.includes(kw))) {
                         console.log(`[UI Scraper] ✅ FOUND: Section L/M keywords match!`);
 
                         const safeFilename = `SAM_UI_Scraped_${Date.now()}.pdf`;

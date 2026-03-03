@@ -8,8 +8,6 @@ export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
 const API_KEY = process.env.SAM_GOV_API_KEY || 'SAM-0fbe5a1c-7d31-4f8e-896d-3d9a1dbd8800';
-// Removed 237, 238 since they error 429 constantly
-const NAICS_CODES = ['541511', '541512', '541519', '511210', '236220'];
 
 async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -28,7 +26,7 @@ async function fetchWithBackoff(url: string, options = {}, retries = 3, backoff 
     throw new Error('Too Many Requests limit exceeded');
 }
 
-export async function POST() {
+export async function POST(req: Request) {
     try {
         const supabase = await createClient();
         const { data: { user } } = await supabase.auth.getUser();
@@ -37,10 +35,24 @@ export async function POST() {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
         }
 
+        let body = {};
+        try {
+            body = await req.json();
+        } catch {
+            // body is optional
+        }
+
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const naicsCodes: string[] = (body as any).naicsCodes || ['541511', '541512', '541519', '511210', '236220'];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const keywords: string[] = (body as any).keywords || ['section l', 'section m', 'schedule l', 'schedule m'];
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        const lookbackDays: number = (body as any).lookbackDays || 90;
+
         const today = new Date();
         const postedTo = `${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getDate().toString().padStart(2, '0')}/${today.getFullYear()}`;
         const past = new Date(today);
-        past.setDate(past.getDate() - 90); // Look back 90 days to get more samples
+        past.setDate(past.getDate() - lookbackDays);
         const postedFrom = `${(past.getMonth() + 1).toString().padStart(2, '0')}/${past.getDate().toString().padStart(2, '0')}/${past.getFullYear()}`;
 
         const stream = new ReadableStream({
@@ -54,7 +66,7 @@ export async function POST() {
                 // eslint-disable-next-line @typescript-eslint/no-explicit-any
                 let opps: any[] = [];
 
-                for (const code of NAICS_CODES) {
+                for (const code of naicsCodes) {
                     sendJSON({ type: 'log', message: `Querying NAICS: ${code}` });
                     const searchUrl = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=30&ncode=${code}&postedFrom=${postedFrom}&postedTo=${postedTo}`;
 
@@ -119,7 +131,7 @@ export async function POST() {
                                 continue;
                             }
 
-                            if (text.includes('section l') || text.includes('section m') || text.includes('schedule l') || text.includes('schedule m')) {
+                            if (keywords.some(kw => text.includes(kw))) {
                                 sendJSON({ type: 'log', message: `  ✅ FOUND: Section L/M keywords match!` });
                                 const docName = contentDisp ? contentDisp.split('filename="')[1]?.split('"')[0] : 'document.pdf';
                                 sendJSON({

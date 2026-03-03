@@ -15,6 +15,21 @@ export function SamScraperClient() {
     const [logs, setLogs] = useState<string[]>([]);
     const [results, setResults] = useState<FoundPdf[]>([]);
 
+    // Filters
+    const [naics, setNaics] = useState('541511, 541512, 541519, 511210, 236220');
+    const [keywords, setKeywords] = useState('section l, section m, schedule l, schedule m');
+    const [lookbackDays, setLookbackDays] = useState('90');
+
+    // History
+    type RunHistoryEntry = {
+        id: string;
+        timestamp: string;
+        mode: string;
+        filters: string;
+        status: string;
+    };
+    const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
+
     const addLog = (msg: string) => {
         setLogs((prev) => [...prev, msg]);
     };
@@ -27,8 +42,19 @@ export function SamScraperClient() {
         const endpoint = mode === 'api' ? '/api/admin/scrape-sam' : '/api/admin/scrape-sam-ui';
         addLog(`Starting SAM.gov scraper via ${mode.toUpperCase()} (${endpoint})...`);
 
+        let runStatus = 'Finished';
+        let foundCount = 0;
+
         try {
-            const res = await fetch(endpoint, { method: 'POST' });
+            const res = await fetch(endpoint, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    naicsCodes: naics.split(',').map(s => s.trim()).filter(Boolean),
+                    keywords: keywords.split(',').map(s => s.trim().toLowerCase()).filter(Boolean),
+                    lookbackDays: parseInt(lookbackDays) || 90
+                })
+            });
 
             const reader = res.body?.getReader();
             const decoder = new TextDecoder();
@@ -54,8 +80,10 @@ export function SamScraperClient() {
                             setResults((prev) => [...prev, data.match]);
                             addLog(`🎉 MATCH FOUND: ${data.match.solicitation}`);
                         } else if (data.type === 'done') {
+                            foundCount = data.count || foundCount;
                             addLog(`Finished scraping. Found ${data.count} matching PDFs.`);
                         } else if (data.type === 'error') {
+                            runStatus = 'Error';
                             addLog(`Error: ${data.message}`);
                         }
                     } catch {
@@ -64,14 +92,57 @@ export function SamScraperClient() {
                 }
             }
         } catch (err: unknown) {
+            runStatus = 'Failed';
             addLog(`Failed to run scraper: ${(err as Error).message}`);
         } finally {
             setLoading(false);
+            setRunHistory(prev => [{
+                id: Date.now().toString(),
+                timestamp: new Date().toLocaleTimeString(),
+                mode: mode.toUpperCase(),
+                filters: `NAICS: ${naics} | Days: ${lookbackDays} | Keywords: ${keywords}`,
+                status: `${runStatus} (${foundCount} found)`
+            }, ...prev]);
         }
     };
 
     return (
-        <div className="space-y-6">
+        <div className="space-y-8">
+
+            {/* Filters Section */}
+            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">NAICS Codes (comma prep)</label>
+                    <input
+                        type="text"
+                        value={naics}
+                        onChange={e => setNaics(e.target.value)}
+                        disabled={loading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Search Keywords</label>
+                    <input
+                        type="text"
+                        value={keywords}
+                        onChange={e => setKeywords(e.target.value)}
+                        disabled={loading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                    />
+                </div>
+                <div>
+                    <label className="block text-sm font-medium text-gray-700 mb-1">Lookback Days</label>
+                    <input
+                        type="number"
+                        value={lookbackDays}
+                        onChange={e => setLookbackDays(e.target.value)}
+                        disabled={loading}
+                        className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                    />
+                </div>
+            </div>
+
             <div className="flex flex-col sm:flex-row gap-4 items-center bg-blue-50/50 p-4 rounded-lg border border-blue-100">
                 <button
                     onClick={() => startScrape('api')}
@@ -133,6 +204,35 @@ export function SamScraperClient() {
                                 </div>
                             ))}
                         </div>
+                    )}
+                </div>
+            </div>
+
+            {/* Run History */}
+            <div className="mt-8 border-t border-gray-200 pt-6">
+                <h3 className="text-lg font-semibold text-gray-900 mb-4">Run History</h3>
+                <div className="bg-white border border-gray-200 rounded-lg overflow-hidden flex flex-col max-h-60 overflow-y-auto shadow-inner">
+                    {runHistory.length === 0 ? (
+                        <div className="p-4 text-sm text-gray-500 text-center">No runs recorded yet in this session.</div>
+                    ) : (
+                        <ul className="divide-y divide-gray-200">
+                            {runHistory.map(run => (
+                                <li key={run.id} className="p-3 text-sm hover:bg-gray-50 flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+                                    <div className="flex items-center gap-3">
+                                        <span className="text-gray-500 font-mono text-xs">{run.timestamp}</span>
+                                        <span className={`px-2 py-0.5 rounded-full text-xs font-medium ${run.mode === 'API' ? 'bg-blue-100 text-blue-800' : 'bg-purple-100 text-purple-800'}`}>
+                                            {run.mode}
+                                        </span>
+                                        <span className={`font-medium ${run.status.includes('Error') || run.status.includes('Failed') ? 'text-red-600' : 'text-green-600'}`}>
+                                            {run.status}
+                                        </span>
+                                    </div>
+                                    <div className="text-gray-500 text-xs truncate max-w-xl" title={run.filters}>
+                                        {run.filters}
+                                    </div>
+                                </li>
+                            ))}
+                        </ul>
                     )}
                 </div>
             </div>
