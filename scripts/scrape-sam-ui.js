@@ -12,14 +12,28 @@ const KEYWORDS = process.env.TARGET_KEYWORDS
     ? process.env.TARGET_KEYWORDS.split(',')
     : ['section l', 'section m', 'schedule l', 'schedule m'];
 
+const SEEN_FILE = path.join(OUTPUT_DIR, 'seen_solicitations.json');
+let seenList = [];
+
+function loadSeen() {
+    if (!fs.existsSync(OUTPUT_DIR)) fs.mkdirSync(OUTPUT_DIR, { recursive: true });
+    if (fs.existsSync(SEEN_FILE)) {
+        try { seenList = JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8')); } catch (e) { }
+    }
+}
+
+function markAsSeen(id) {
+    if (!id || seenList.includes(id)) return;
+    seenList.push(id);
+    fs.writeFileSync(SEEN_FILE, JSON.stringify(seenList, null, 2));
+}
+
 async function delay(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
 async function scrapeSamUI() {
-    if (!fs.existsSync(OUTPUT_DIR)) {
-        fs.mkdirSync(OUTPUT_DIR);
-    }
+    loadSeen();
 
     console.log(`[UI Scraper] Launching headless browser...`);
     const browser = await puppeteer.launch({ headless: 'new' });
@@ -67,6 +81,15 @@ async function scrapeSamUI() {
 
         for (const link of uniqueLinks) {
             if (successfulDownloads >= 3) break;
+
+            // Extract the noticeId from the URL (e.g., .../opp/<noticeId>/view)
+            const match = link.match(/\/opp\/([^/]+)\/view/);
+            const noticeId = match ? match[1] : null;
+
+            if (noticeId && seenList.includes(noticeId)) {
+                console.log(`[UI Scraper] ⏭️ Skipping ${noticeId} (Already seen)`);
+                continue;
+            }
 
             console.log(`\n[UI Scraper] Visiting: ${link}`);
             try {
@@ -130,6 +153,8 @@ async function scrapeSamUI() {
             } catch (err) {
                 console.log(`[UI Scraper] Error visiting opportunity: ${err.message}`);
             }
+            // Mark as seen so we don't visit this link again on future runs
+            if (noticeId) markAsSeen(noticeId);
         }
     }
 

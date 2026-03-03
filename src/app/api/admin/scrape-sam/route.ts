@@ -1,6 +1,8 @@
 // src/app/api/admin/scrape-sam/route.ts
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
+import fs from 'fs';
+import path from 'path';
 // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
 const pdfParse = require('pdf-parse');
 
@@ -57,6 +59,24 @@ export async function POST(req: Request) {
 
         const stream = new ReadableStream({
             async start(controller) {
+                const samplesDir = path.join(process.cwd(), 'sam_samples');
+                const seenFile = path.join(samplesDir, 'seen_solicitations.json');
+
+                if (!fs.existsSync(samplesDir)) {
+                    fs.mkdirSync(samplesDir, { recursive: true });
+                }
+
+                let seenList: string[] = [];
+                if (fs.existsSync(seenFile)) {
+                    try { seenList = JSON.parse(fs.readFileSync(seenFile, 'utf8')); } catch { }
+                }
+
+                const markAsSeen = (id: string) => {
+                    if (!id || seenList.includes(id)) return;
+                    seenList.push(id);
+                    fs.writeFileSync(seenFile, JSON.stringify(seenList, null, 2));
+                };
+
                 const sendJSON = (data: Record<string, unknown>) => {
                     controller.enqueue(typeof data === 'string' ? data : JSON.stringify(data) + '\n');
                 };
@@ -99,7 +119,14 @@ export async function POST(req: Request) {
 
                 for (const opp of smallBizOpps) {
                     if (successfulDownloads >= 3) break;
-                    if (!opp.resourceLinks || opp.resourceLinks.length === 0) continue;
+                    if (!opp.noticeId || seenList.includes(opp.noticeId)) {
+                        sendJSON({ type: 'log', message: `⏭️ Skipping ${opp.solicitationNumber} (Already seen/processed)` });
+                        continue;
+                    }
+                    if (!opp.resourceLinks || opp.resourceLinks.length === 0) {
+                        markAsSeen(opp.noticeId); // No links, don't check again
+                        continue;
+                    }
 
                     sendJSON({ type: 'log', message: `\nChecking: ${opp.title} (${opp.solicitationNumber})` });
 
@@ -152,6 +179,8 @@ export async function POST(req: Request) {
                             sendJSON({ type: 'log', message: `  ⚠️ Attachment error: ${(err as Error).message}` });
                         }
                     }
+                    // Regardless of outcome (found, no LM, or error), mark as seen so we don't repeat the exact same one next time
+                    markAsSeen(opp.noticeId);
                 }
 
                 sendJSON({ type: 'done', count: successfulDownloads });

@@ -11,9 +11,14 @@ type FoundPdf = {
 };
 
 export function SamScraperClient() {
-    const [loading, setLoading] = useState(false);
-    const [logs, setLogs] = useState<string[]>([]);
-    const [results, setResults] = useState<FoundPdf[]>([]);
+    const [apiLoading, setApiLoading] = useState(false);
+    const [uiLoading, setUiLoading] = useState(false);
+
+    const [apiLogs, setApiLogs] = useState<string[]>([]);
+    const [uiLogs, setUiLogs] = useState<string[]>([]);
+
+    const [apiResults, setApiResults] = useState<FoundPdf[]>([]);
+    const [uiResults, setUiResults] = useState<FoundPdf[]>([]);
 
     // Filters
     const [naics, setNaics] = useState('541511, 541512, 541519, 511210, 236220');
@@ -30,11 +35,30 @@ export function SamScraperClient() {
     };
     const [runHistory, setRunHistory] = useState<RunHistoryEntry[]>([]);
 
-    const addLog = (msg: string) => {
-        setLogs((prev) => [...prev, msg]);
+    const addApiLog = (msg: string) => setApiLogs((prev) => [...prev, msg]);
+    const addUiLog = (msg: string) => setUiLogs((prev) => [...prev, msg]);
+
+    const shuffleNaics = () => {
+        const pool = [
+            '541511', '541512', '541519', '511210', '236220', // IT/Construction
+            '541330', // Engineering
+            '541611', '541618', // Consulting/Management
+            '561210', // Facilities
+            '541990', // Tech SVCS
+            '518210', // Data Processing
+            '541690'  // Scientific/Tech Consulting
+        ];
+        // Pick 5 random unique
+        const shuffled = pool.sort(() => 0.5 - Math.random()).slice(0, 5);
+        setNaics(shuffled.join(', '));
     };
 
     const startScrape = async (mode: 'api' | 'ui') => {
+        const setLoading = mode === 'api' ? setApiLoading : setUiLoading;
+        const setLogs = mode === 'api' ? setApiLogs : setUiLogs;
+        const setResults = mode === 'api' ? setApiResults : setUiResults;
+        const addLog = mode === 'api' ? addApiLog : addUiLog;
+
         setLoading(true);
         setLogs([]);
         setResults([]);
@@ -110,14 +134,23 @@ export function SamScraperClient() {
         <div className="space-y-8">
 
             {/* Filters Section */}
-            <div className="grid grid-cols-1 md:grid-cols-3 gap-4 bg-white p-4 rounded-lg border border-gray-200 shadow-sm">
-                <div>
-                    <label className="block text-sm font-medium text-gray-700 mb-1">NAICS Codes (comma prep)</label>
+            <div className="grid grid-cols-1 md:grid-cols-4 gap-4 bg-white p-4 rounded-lg border border-gray-200 shadow-sm relative">
+                <div className="md:col-span-2">
+                    <div className="flex justify-between items-center mb-1">
+                        <label className="block text-sm font-medium text-gray-700">NAICS Codes (comma prep)</label>
+                        <button
+                            type="button"
+                            onClick={shuffleNaics}
+                            className="text-xs text-blue-600 hover:text-blue-800 font-medium bg-blue-50 px-2 py-0.5 rounded transition-colors"
+                        >
+                            Shuffle 🎲
+                        </button>
+                    </div>
                     <input
                         type="text"
                         value={naics}
                         onChange={e => setNaics(e.target.value)}
-                        disabled={loading}
+                        disabled={apiLoading || uiLoading}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
                     />
                 </div>
@@ -127,7 +160,7 @@ export function SamScraperClient() {
                         type="text"
                         value={keywords}
                         onChange={e => setKeywords(e.target.value)}
-                        disabled={loading}
+                        disabled={apiLoading || uiLoading}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
                     />
                 </div>
@@ -137,74 +170,87 @@ export function SamScraperClient() {
                         type="number"
                         value={lookbackDays}
                         onChange={e => setLookbackDays(e.target.value)}
-                        disabled={loading}
+                        disabled={apiLoading || uiLoading}
                         className="w-full px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
                     />
                 </div>
             </div>
 
-            <div className="flex flex-col sm:flex-row gap-4 items-center bg-blue-50/50 p-4 rounded-lg border border-blue-100">
-                <button
-                    onClick={() => startScrape('api')}
-                    disabled={loading}
-                    className="w-full sm:w-auto px-4 py-2 bg-[#1B365D] text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-[#152a48] transition-colors"
-                >
-                    {loading ? 'Scraping...' : 'Mode: SAM API Scraper'}
-                </button>
-                <div className="text-sm text-gray-500 text-center sm:text-left">
-                    <strong>Standard API:</strong> Uses your <code>SAM_GOV_API_KEY</code>. Reliable but subject to extreme 429 Rate Limits from SAM.gov.
-                </div>
-            </div>
-
-            <div className="flex flex-col sm:flex-row gap-4 items-center bg-purple-50/50 p-4 rounded-lg border border-purple-100">
-                <button
-                    onClick={() => startScrape('ui')}
-                    disabled={loading}
-                    className="w-full sm:w-auto px-4 py-2 bg-purple-600 text-white rounded-md font-medium disabled:opacity-50 disabled:cursor-not-allowed hover:bg-purple-700 transition-colors"
-                >
-                    {loading ? 'Scraping...' : 'Mode: Local UI Navigator'}
-                </button>
-                <div className="text-sm text-gray-500 text-center sm:text-left">
-                    <strong>Browser Engine:</strong> Bypasses API limits by launching a hidden Chrome window and clicking links like a human.
-                    <span className="block mt-1 text-purple-700 font-medium">⚠️ Only works when running RFP Shredder locally (localhost:3000), not on Vercel.</span>
-                </div>
-            </div>
-
-            <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                {/* Logs */}
-                <div className="bg-gray-900 rounded-lg p-4 font-mono text-xs text-green-400 h-96 overflow-y-auto">
-                    {logs.length === 0 ? (
-                        <span className="text-gray-500">Waiting to start...</span>
-                    ) : (
-                        logs.map((log, i) => <div key={i}>{log}</div>)
-                    )}
-                </div>
-
-                {/* Results */}
-                <div className="border border-gray-200 rounded-lg p-4 h-96 overflow-y-auto bg-gray-50">
-                    <h3 className="font-semibold text-gray-700 mb-4 sticky top-0 bg-gray-50 pb-2 border-b border-gray-200">Found PDFs</h3>
-                    {results.length === 0 ? (
-                        <p className="text-sm text-gray-500">Matches will appear here...</p>
-                    ) : (
-                        <div className="space-y-4">
-                            {results.map((res, i) => (
-                                <div key={i} className="bg-white p-4 rounded-md shadow-sm border border-gray-200">
-                                    <div className="text-sm font-semibold text-gray-900 line-clamp-2" title={res.oppTitle}>
-                                        {res.oppTitle}
-                                    </div>
-                                    <div className="text-xs text-gray-500 mt-1">Sol: {res.solicitation}</div>
-                                    <a
-                                        href={res.link}
-                                        target="_blank"
-                                        rel="noopener noreferrer"
-                                        className="mt-3 inline-flex items-center text-sm font-medium text-brand-green hover:underline"
-                                    >
-                                        Download PDF →
-                                    </a>
-                                </div>
-                            ))}
+            <div className="grid grid-cols-1 xl:grid-cols-2 gap-6">
+                {/* --- API SCRAPER PANEL --- */}
+                <div className="flex flex-col gap-4">
+                    <div className="flex flex-col sm:flex-row gap-4 items-center bg-blue-50/50 p-4 rounded-lg border border-blue-100">
+                        <button
+                            onClick={() => startScrape('api')}
+                            disabled={apiLoading}
+                            className="w-full sm:w-auto px-4 py-2 bg-[#1B365D] text-white rounded-md font-medium disabled:opacity-50 hover:bg-[#152a48] transition-colors"
+                        >
+                            {apiLoading ? 'Scraping...' : 'Start API Profile'}
+                        </button>
+                        <div className="text-sm text-gray-500">
+                            <strong>Standard API</strong> (Extreme Rate Limits)
                         </div>
-                    )}
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-gray-900 rounded-lg p-3 font-mono text-[10px] leading-relaxed text-green-400 h-80 overflow-y-auto break-all">
+                            {apiLogs.length === 0 ? (
+                                <span className="text-gray-500">API Logs waiting...</span>
+                            ) : (
+                                apiLogs.map((log, i) => <div key={i}>{log}</div>)
+                            )}
+                        </div>
+                        <div className="border border-gray-200 bg-gray-50 rounded-lg p-3 h-80 overflow-y-auto">
+                            <h3 className="font-semibold text-gray-700 mb-3 sticky top-0 bg-gray-50 pb-2 border-b border-gray-200">API Results</h3>
+                            <div className="space-y-3">
+                                {apiResults.map((res, i) => (
+                                    <div key={i} className="bg-white p-3 rounded shadow-sm border border-gray-200">
+                                        <div className="text-sm font-semibold text-gray-900 line-clamp-2" title={res.oppTitle}>{res.oppTitle}</div>
+                                        <div className="text-xs text-gray-500 mt-1">Sol: {res.solicitation}</div>
+                                        <a href={res.link} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center text-xs font-medium text-brand-green hover:underline">Download PDF →</a>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
+                </div>
+
+                {/* --- UI SCRAPER PANEL --- */}
+                <div className="flex flex-col gap-4">
+                    <div className="flex flex-col sm:flex-row gap-4 items-center bg-purple-50/50 p-4 rounded-lg border border-purple-100">
+                        <button
+                            onClick={() => startScrape('ui')}
+                            disabled={uiLoading}
+                            className="w-full sm:w-auto px-4 py-2 bg-purple-600 text-white rounded-md font-medium disabled:opacity-50 hover:bg-purple-700 transition-colors"
+                        >
+                            {uiLoading ? 'Scraping...' : 'Start UI Bypass'}
+                        </button>
+                        <div className="text-sm text-gray-500">
+                            <strong>Browser Engine</strong> (Bypasses API limits)
+                        </div>
+                    </div>
+
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <div className="bg-gray-900 rounded-lg p-3 font-mono text-[10px] leading-relaxed text-[#c084fc] h-80 overflow-y-auto break-all">
+                            {uiLogs.length === 0 ? (
+                                <span className="text-gray-500">UI Logs waiting...</span>
+                            ) : (
+                                uiLogs.map((log, i) => <div key={i}>{log}</div>)
+                            )}
+                        </div>
+                        <div className="border border-gray-200 bg-gray-50 rounded-lg p-3 h-80 overflow-y-auto">
+                            <h3 className="font-semibold text-gray-700 mb-3 sticky top-0 bg-gray-50 pb-2 border-b border-gray-200">UI Results</h3>
+                            <div className="space-y-3">
+                                {uiResults.map((res, i) => (
+                                    <div key={i} className="bg-white p-3 rounded shadow-sm border border-gray-200">
+                                        <div className="text-sm font-semibold text-gray-900 line-clamp-2" title={res.oppTitle}>{res.oppTitle}</div>
+                                        <div className="text-xs text-gray-500 mt-1">Sol: {res.solicitation}</div>
+                                        <a href={res.link} target="_blank" rel="noopener noreferrer" className="mt-2 inline-flex items-center text-xs font-medium text-brand-green hover:underline">Download PDF →</a>
+                                    </div>
+                                ))}
+                            </div>
+                        </div>
+                    </div>
                 </div>
             </div>
 
