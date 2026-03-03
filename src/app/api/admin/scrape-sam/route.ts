@@ -1,4 +1,5 @@
 // src/app/api/admin/scrape-sam/route.ts
+// Strategy 1: Consolidated API queries (1-2 calls max) + local cache
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import fs from 'fs';
@@ -9,17 +10,20 @@ const pdfParse = require('pdf-parse');
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
 
-const API_KEY = process.env.SAM_GOV_API_KEY || 'SAM-0fbe5a1c-7d31-4f8e-896d-3d9a1dbd8800';
+const API_KEY = process.env.SAM_GOV_API_KEY || '';
+const SAMPLES_DIR = path.join(process.cwd(), 'sam_samples');
+const SEEN_FILE = path.join(SAMPLES_DIR, 'seen_solicitations.json');
+const CACHE_FILE = path.join(SAMPLES_DIR, 'opp_cache.json');
 
 async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchWithBackoff(url: string, options = {}, retries = 5, backoff = 2000) {
+async function fetchWithBackoff(url: string, retries = 4, backoff = 3000) {
     for (let i = 0; i < retries; i++) {
         try {
-            const res = await fetch(url, options);
-            if (res.status === 429) {
+            const res = await fetch(url);
+            if (res.status === 429 || res.status === 503) {
                 const wait = backoff * Math.pow(2, i);
                 await delay(wait);
                 continue;
@@ -30,7 +34,51 @@ async function fetchWithBackoff(url: string, options = {}, retries = 5, backoff 
             await delay(backoff);
         }
     }
-    throw new Error('Too Many Requests limit exceeded after retries');
+    throw new Error('API limit exceeded after retries');
+}
+
+function ensureDir() {
+    if (!fs.existsSync(SAMPLES_DIR)) fs.mkdirSync(SAMPLES_DIR, { recursive: true });
+}
+
+function loadSeen(): string[] {
+    ensureDir();
+    if (fs.existsSync(SEEN_FILE)) {
+        try { return JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8')); } catch { }
+    }
+    return [];
+}
+
+function saveSeen(list: string[]) {
+    fs.writeFileSync(SEEN_FILE, JSON.stringify(list, null, 2));
+}
+
+interface CachedOpp {
+    noticeId: string;
+    title: string;
+    solicitationNumber: string;
+    resourceLinks: string[];
+    typeOfSetAsideDescription?: string;
+    cachedAt: string;
+}
+
+function loadCache(): CachedOpp[] {
+    ensureDir();
+    if (fs.existsSync(CACHE_FILE)) {
+        try {
+            const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+            // Cache expires after 24 hours
+            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
+            if (data.timestamp && data.timestamp > cutoff) {
+                return data.opportunities || [];
+            }
+        } catch { }
+    }
+    return [];
+}
+
+function saveCache(opps: CachedOpp[]) {
+    fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp: Date.now(), opportunities: opps }, null, 2));
 }
 
 export async function POST(req: Request) {
@@ -43,19 +91,13 @@ export async function POST(req: Request) {
         }
 
         let body: Record<string, unknown> = {};
-        try {
-            body = await req.json() as Record<string, unknown>;
-        } catch {
-            // body is optional
-        }
+        try { body = await req.json() as Record<string, unknown>; } catch { }
 
         const naicsCodes: string[] = (Array.isArray(body.naicsCodes) ? body.naicsCodes : null) || ['541511', '541512', '541519', '511210', '236220'];
         const keywords: string[] = (Array.isArray(body.keywords) ? body.keywords : null) || [
             'section l', 'section m', 'schedule l', 'schedule m',
             'instructions to offerors', 'evaluation criteria',
-            'evaluation factors', 'proposal preparation',
-            'proposal instructions', 'technical approach',
-            'past performance', 'volume i', 'volume ii'
+            'evaluation factors', 'proposal preparation'
         ];
         const lookbackDays: number = (typeof body.lookbackDays === 'number' ? body.lookbackDays : null) || 180;
 
@@ -67,145 +109,141 @@ export async function POST(req: Request) {
 
         const stream = new ReadableStream({
             async start(controller) {
-                const samplesDir = path.join(process.cwd(), 'sam_samples');
-                const seenFile = path.join(samplesDir, 'seen_solicitations.json');
-
-                if (!fs.existsSync(samplesDir)) {
-                    fs.mkdirSync(samplesDir, { recursive: true });
-                }
-
-                let seenList: string[] = [];
-                if (fs.existsSync(seenFile)) {
-                    try { seenList = JSON.parse(fs.readFileSync(seenFile, 'utf8')); } catch { }
-                }
-
-                const markAsSeen = (id: string) => {
-                    if (!id || seenList.includes(id)) return;
-                    seenList.push(id);
-                    fs.writeFileSync(seenFile, JSON.stringify(seenList, null, 2));
-                };
-
                 const sendJSON = (data: Record<string, unknown>) => {
-                    controller.enqueue(typeof data === 'string' ? data : JSON.stringify(data) + '\n');
+                    controller.enqueue(JSON.stringify(data) + '\n');
                 };
 
-                sendJSON({ type: 'log', message: `🔍 Searching SAM.gov from ${postedFrom} to ${postedTo}...` });
-                sendJSON({ type: 'log', message: `📋 Keywords: ${keywords.join(', ')}` });
-                sendJSON({ type: 'log', message: `📊 Already seen: ${seenList.length} opportunities` });
+                const seenList = loadSeen();
+                sendJSON({ type: 'log', message: `🔍 SAM.gov API Scraper` });
+                sendJSON({ type: 'log', message: `📊 Already seen: ${seenList.length} | Keywords: ${keywords.length}` });
 
-                // Notice types most likely to contain full RFP PDFs with Section L/M
-                const noticeTypes = ['k', 'o']; // k=Combined Synopsis/Solicitation, o=Solicitation
-                // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                let opps: any[] = [];
+                // ---- STEP 1: Get opportunities (from cache or 1 API call) ----
+                let opps: CachedOpp[] = loadCache();
+                let usedCache = false;
 
-                for (const code of naicsCodes) {
-                    for (const ptype of noticeTypes) {
-                        const ptypeLabel = ptype === 'k' ? 'Combined Synopsis/Solicitation' : 'Solicitation';
-                        sendJSON({ type: 'log', message: `\n📡 NAICS ${code} | Type: ${ptypeLabel}` });
+                if (opps.length > 0) {
+                    usedCache = true;
+                    sendJSON({ type: 'log', message: `📦 Using cached data (${opps.length} opportunities, <24h old)` });
+                    sendJSON({ type: 'log', message: `   ℹ️ Delete sam_samples/opp_cache.json to force fresh API search` });
+                } else {
+                    // SINGLE consolidated API call with all NAICS codes
+                    const ncodesParam = naicsCodes.join(',');
+                    // Use ptype=k (Combined Synopsis/Solicitation) - highest chance of full RFP PDFs
+                    const searchUrl = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=100&ncode=${ncodesParam}&ptype=k&postedFrom=${postedFrom}&postedTo=${postedTo}`;
 
-                        const searchUrl = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=50&ncode=${code}&ptype=${ptype}&postedFrom=${postedFrom}&postedTo=${postedTo}`;
+                    sendJSON({ type: 'log', message: `📡 Searching: NAICS [${ncodesParam}] | Combined Synopsis/Solicitations` });
+                    sendJSON({ type: 'log', message: `   Date range: ${postedFrom} → ${postedTo}` });
+                    sendJSON({ type: 'log', message: `   ⚡ Using 1 API call (10/day limit)` });
 
-                        try {
-                            const res = await fetchWithBackoff(searchUrl);
-                            if (!res.ok) {
-                                sendJSON({ type: 'log', message: `  ⚠️ API ${res.status}: ${res.statusText}` });
-                                continue;
+                    try {
+                        const res = await fetchWithBackoff(searchUrl);
+                        if (!res.ok) {
+                            const errText = await res.text().catch(() => res.statusText);
+                            sendJSON({ type: 'log', message: `❌ API Error ${res.status}: ${errText.substring(0, 200)}` });
+
+                            if (res.status === 503 || res.status === 429) {
+                                sendJSON({ type: 'log', message: `\n💡 TIP: Your API key is limited to 10 requests/day.` });
+                                sendJSON({ type: 'log', message: `   Try again tomorrow, or use the Browser Engine instead.` });
+                                sendJSON({ type: 'log', message: `   To get 1000 req/day: register entity + request Data Entry role at SAM.gov` });
                             }
-                            const data = await res.json();
-                            if (data.opportunitiesData) {
-                                opps = opps.concat(data.opportunitiesData);
-                                sendJSON({ type: 'log', message: `  → ${data.opportunitiesData.length} records found` });
-                            } else {
-                                sendJSON({ type: 'log', message: `  → 0 records` });
-                            }
-                        } catch (err: unknown) {
-                            sendJSON({ type: 'log', message: `  ❌ Fetch error: ${(err as Error).message}` });
+
+                            sendJSON({ type: 'done', count: 0 });
+                            controller.close();
+                            return;
                         }
-                        await delay(800);
+
+                        const data = await res.json();
+                        const rawOpps = data.opportunitiesData || [];
+                        sendJSON({ type: 'log', message: `   → ${rawOpps.length} opportunities found` });
+
+                        // Cache them for future runs
+                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                        opps = rawOpps.map((o: any) => ({
+                            noticeId: o.noticeId || '',
+                            title: o.title || '',
+                            solicitationNumber: o.solicitationNumber || '',
+                            resourceLinks: o.resourceLinks || [],
+                            typeOfSetAsideDescription: o.typeOfSetAsideDescription || '',
+                            cachedAt: new Date().toISOString()
+                        }));
+                        saveCache(opps);
+                        sendJSON({ type: 'log', message: `💾 Cached ${opps.length} opportunities for 24h reuse` });
+
+                    } catch (err: unknown) {
+                        sendJSON({ type: 'log', message: `❌ Fetch error: ${(err as Error).message}` });
+                        sendJSON({ type: 'done', count: 0 });
+                        controller.close();
+                        return;
                     }
                 }
 
-                // Deduplicate by noticeId
-                const seen = new Set<string>();
-                opps = opps.filter(o => {
-                    if (!o.noticeId || seen.has(o.noticeId)) return false;
-                    seen.add(o.noticeId);
-                    return true;
-                });
+                // ---- STEP 2: Filter to unseen opps with resource links ----
+                const unseenWithLinks = opps.filter(o =>
+                    o.noticeId &&
+                    !seenList.includes(o.noticeId) &&
+                    o.resourceLinks.length > 0
+                );
 
-                sendJSON({ type: 'log', message: `\n📊 Total unique opportunities: ${opps.length}` });
+                sendJSON({ type: 'log', message: `\n📋 ${unseenWithLinks.length} unseen opportunities with attachments (of ${opps.length} total)` });
 
-                // Don't filter by small business only - check ALL opportunities for PDFs
-                // Sort: prefer ones with resourceLinks
-                opps.sort((a, b) => {
-                    const aLinks = a.resourceLinks?.length ?? 0;
-                    const bLinks = b.resourceLinks?.length ?? 0;
-                    return bLinks - aLinks;
-                });
+                if (unseenWithLinks.length === 0 && usedCache) {
+                    sendJSON({ type: 'log', message: `\n💡 All cached opportunities already checked!` });
+                    sendJSON({ type: 'log', message: `   Delete sam_samples/opp_cache.json to refresh, or try different NAICS codes.` });
+                }
 
+                // ---- STEP 3: Download & check PDFs (uses API calls for downloads) ----
                 let successfulDownloads = 0;
-                let checkedCount = 0;
+                let checked = 0;
 
-                for (const opp of opps) {
+                for (const opp of unseenWithLinks) {
                     if (successfulDownloads >= 3) break;
-                    if (checkedCount >= 40) {
-                        sendJSON({ type: 'log', message: `\n⏱️ Checked 40 opportunities, stopping to respect rate limits.` });
+                    if (checked >= 15) {
+                        sendJSON({ type: 'log', message: `\n⏱️ Checked 15 opportunities, stopping to conserve API calls.` });
                         break;
                     }
 
-                    if (seenList.includes(opp.noticeId)) {
-                        continue; // silent skip for already-seen
-                    }
-
-                    if (!opp.resourceLinks || opp.resourceLinks.length === 0) {
-                        markAsSeen(opp.noticeId);
-                        continue;
-                    }
-
-                    checkedCount++;
-                    const setAside = opp.typeOfSetAsideDescription || opp.typeOfSetAside || 'Unrestricted';
-                    sendJSON({ type: 'log', message: `\n🔎 [${checkedCount}] ${opp.title}` });
-                    sendJSON({ type: 'log', message: `   Sol: ${opp.solicitationNumber} | Set-aside: ${setAside} | Links: ${opp.resourceLinks.length}` });
+                    checked++;
+                    sendJSON({ type: 'log', message: `\n🔎 [${checked}/${unseenWithLinks.length}] ${opp.title}` });
+                    sendJSON({ type: 'log', message: `   Sol: ${opp.solicitationNumber} | Links: ${opp.resourceLinks.length} | Set-aside: ${opp.typeOfSetAsideDescription || 'None'}` });
 
                     for (const link of opp.resourceLinks) {
                         if (successfulDownloads >= 3) break;
-                        await delay(1500);
+                        await delay(2000); // Respect rate limits
 
                         try {
                             const downloadUrl = link.includes('api_key=') ? link : `${link}${link.includes('?') ? '&' : '?'}api_key=${API_KEY}`;
 
-                            sendJSON({ type: 'log', message: `   📥 Downloading attachment...` });
+                            sendJSON({ type: 'log', message: `   📥 Downloading...` });
                             const fileRes = await fetchWithBackoff(downloadUrl);
+
                             if (!fileRes.ok) {
                                 sendJSON({ type: 'log', message: `   ⚠️ HTTP ${fileRes.status}` });
+                                if (fileRes.status === 503 || fileRes.status === 429) {
+                                    sendJSON({ type: 'log', message: `   🛑 Rate limited — stopping downloads.` });
+                                    checked = 999; // Break outer loop too
+                                }
                                 continue;
                             }
 
-                            const contentType = fileRes.headers.get('content-type') || '';
                             const contentDisp = fileRes.headers.get('content-disposition') || '';
-                            const filename = contentDisp.split('filename=')[1]?.replace(/"/g, '') || '';
+                            const filename = contentDisp.split('filename=')[1]?.replace(/"/g, '').trim() || '';
                             const ext = filename.split('.').pop()?.toLowerCase() || '';
 
-                            // Skip clearly non-document files
-                            if (['zip', 'xlsx', 'xls', 'csv', 'jpg', 'png', 'gif', 'msg'].includes(ext)) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Skipping ${ext.toUpperCase()} file: ${filename}` });
+                            // Skip non-document files
+                            if (['zip', 'xlsx', 'xls', 'csv', 'jpg', 'png', 'gif', 'msg', 'pptx'].includes(ext)) {
+                                sendJSON({ type: 'log', message: `   ⏭️ Skipping ${ext.toUpperCase()}: ${filename}` });
                                 continue;
                             }
 
                             const arrayBuffer = await fileRes.arrayBuffer();
                             const buffer = Buffer.from(arrayBuffer);
 
-                            // Check file size - skip tiny files (<5KB) and huge files (>50MB)
-                            if (buffer.length < 5000) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Too small (${(buffer.length / 1024).toFixed(1)}KB)` });
-                                continue;
-                            }
-                            if (buffer.length > 50 * 1024 * 1024) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Too large (${(buffer.length / 1024 / 1024).toFixed(1)}MB)` });
+                            if (buffer.length < 5000 || buffer.length > 50 * 1024 * 1024) {
+                                sendJSON({ type: 'log', message: `   ⏭️ Size filter: ${(buffer.length / 1024).toFixed(0)}KB` });
                                 continue;
                             }
 
-                            sendJSON({ type: 'log', message: `   📄 File: ${filename || 'unknown'} (${(buffer.length / 1024).toFixed(0)}KB) [${contentType.split(';')[0]}]` });
+                            sendJSON({ type: 'log', message: `   📄 ${filename || 'file'} (${(buffer.length / 1024).toFixed(0)}KB)` });
 
                             let text = '';
                             try {
@@ -216,47 +254,46 @@ export async function POST(req: Request) {
                                 continue;
                             }
 
-                            // Check page count
-                            const pageCount = text.split(/\f/).length;
-                            sendJSON({ type: 'log', message: `   📑 Parsed ${pageCount} pages, ${text.length.toLocaleString()} chars` });
-
                             if (text.length < 500) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Too little text (scanned/image PDF?)` });
+                                sendJSON({ type: 'log', message: `   ⏭️ Scanned/image PDF (too little text)` });
                                 continue;
                             }
 
-                            const matchedKeywords = keywords.filter(kw => text.includes(kw));
-                            if (matchedKeywords.length > 0) {
-                                sendJSON({ type: 'log', message: `   ✅ MATCH! Found: "${matchedKeywords.join('", "')}"` });
-
-                                // Save the PDF locally
+                            const matched = keywords.filter(kw => text.includes(kw));
+                            if (matched.length > 0) {
                                 const safeFilename = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}.pdf`;
-                                const filepath = path.join(samplesDir, safeFilename);
+                                const filepath = path.join(SAMPLES_DIR, safeFilename);
                                 fs.writeFileSync(filepath, buffer);
-                                sendJSON({ type: 'log', message: `   💾 Saved: ${safeFilename}` });
 
+                                sendJSON({ type: 'log', message: `   ✅ MATCH! Keywords: "${matched.join('", "')}"` });
+                                sendJSON({ type: 'log', message: `   💾 Saved: ${safeFilename}` });
                                 sendJSON({
                                     type: 'result',
                                     match: {
                                         oppTitle: opp.title,
                                         solicitation: opp.solicitationNumber,
-                                        link: downloadUrl,
+                                        link: link,
                                         filename: safeFilename
                                     }
                                 });
                                 successfulDownloads++;
                                 break;
                             } else {
-                                sendJSON({ type: 'log', message: `   ❌ No keyword matches in PDF` });
+                                sendJSON({ type: 'log', message: `   ❌ No keyword matches` });
                             }
                         } catch (err: unknown) {
                             sendJSON({ type: 'log', message: `   ⚠️ Error: ${(err as Error).message}` });
                         }
                     }
-                    markAsSeen(opp.noticeId);
+
+                    seenList.push(opp.noticeId);
+                    saveSeen(seenList);
                 }
 
-                sendJSON({ type: 'log', message: `\n🏁 Done. Checked ${checkedCount} opportunities. Found ${successfulDownloads} matching PDFs.` });
+                sendJSON({ type: 'log', message: `\n🏁 Done. Checked ${checked} opps. Found ${successfulDownloads} matching PDFs.` });
+                if (successfulDownloads === 0 && checked > 0) {
+                    sendJSON({ type: 'log', message: `💡 Tips: Try Shuffle NAICS, increase Lookback Days, or use Browser Engine.` });
+                }
                 sendJSON({ type: 'done', count: successfulDownloads });
                 controller.close();
             }

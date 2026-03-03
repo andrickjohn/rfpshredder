@@ -20,6 +20,12 @@ export function SamScraperClient() {
     const [apiResults, setApiResults] = useState<FoundPdf[]>([]);
     const [uiResults, setUiResults] = useState<FoundPdf[]>([]);
 
+    // Direct Lookup (Strategy 3)
+    const [directUrl, setDirectUrl] = useState('');
+    const [directLoading, setDirectLoading] = useState(false);
+    const [directLogs, setDirectLogs] = useState<string[]>([]);
+    const [directResults, setDirectResults] = useState<FoundPdf[]>([]);
+
     // Filters
     const [naics, setNaics] = useState('541511, 541512, 541519, 511210, 236220');
     const [keywords, setKeywords] = useState('section l, section m, schedule l, schedule m, instructions to offerors, evaluation criteria, evaluation factors');
@@ -51,6 +57,72 @@ export function SamScraperClient() {
         // Pick 5 random unique
         const shuffled = pool.sort(() => 0.5 - Math.random()).slice(0, 5);
         setNaics(shuffled.join(', '));
+    };
+
+    // Strategy 4: Known-good seed URLs for pipeline validation
+    const seedUrls = [
+        { label: 'IT Services RFP', url: 'https://sam.gov/search/?index=opp&q=information+technology+services&sort=-modifiedDate&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5BnoticeType%5D%5B0%5D=Combined%20Synopsis%2FSolicitation' },
+        { label: 'Cybersecurity', url: 'https://sam.gov/search/?index=opp&q=cybersecurity+assessment&sort=-modifiedDate&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5BnoticeType%5D%5B0%5D=Solicitation' },
+        { label: 'Software Dev', url: 'https://sam.gov/search/?index=opp&q=software+development+services&sort=-modifiedDate&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5BnoticeType%5D%5B0%5D=Solicitation' },
+    ];
+
+    const startDirectLookup = async () => {
+        if (!directUrl.trim()) return;
+        setDirectLoading(true);
+        setDirectLogs([]);
+        setDirectResults([]);
+
+        const addLog = (msg: string) => setDirectLogs(prev => [...prev, msg]);
+        addLog(`🎯 Direct Lookup: ${directUrl}`);
+
+        let runStatus = 'Finished';
+        let foundCount = 0;
+
+        try {
+            const res = await fetch('/api/admin/scrape-sam-direct', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({
+                    url: directUrl,
+                    keywords: keywords.split(',').map(s => s.trim().toLowerCase()).filter(Boolean)
+                })
+            });
+
+            const reader = res.body?.getReader();
+            const decoder = new TextDecoder();
+            if (!reader) throw new Error('No response body');
+
+            while (true) {
+                const { done, value } = await reader.read();
+                if (done) break;
+                const chunk = decoder.decode(value, { stream: true });
+                for (const line of chunk.split('\n')) {
+                    if (!line.trim()) continue;
+                    try {
+                        const data = JSON.parse(line);
+                        if (data.type === 'log') addLog(data.message);
+                        else if (data.type === 'result') {
+                            setDirectResults(prev => [...prev, data.match]);
+                            addLog(`🎉 MATCH: ${data.match.filename}`);
+                            foundCount++;
+                        }
+                        else if (data.type === 'done') foundCount = data.count || foundCount;
+                    } catch { }
+                }
+            }
+        } catch (err: unknown) {
+            runStatus = 'Failed';
+            addLog(`❌ ${(err as Error).message}`);
+        } finally {
+            setDirectLoading(false);
+            setRunHistory(prev => [{
+                id: Date.now().toString(),
+                timestamp: new Date().toLocaleTimeString(),
+                mode: 'DIRECT',
+                filters: `URL: ${directUrl.substring(0, 60)}`,
+                status: `${runStatus} (${foundCount} found)`
+            }, ...prev]);
+        }
     };
 
     const startScrape = async (mode: 'api' | 'ui') => {
@@ -252,6 +324,65 @@ export function SamScraperClient() {
                         </div>
                     </div>
                 </div>
+            </div>
+
+            {/* --- DIRECT LOOKUP (Strategy 3 + 4) --- */}
+            <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm space-y-3">
+                <div className="flex items-center justify-between">
+                    <h3 className="font-semibold text-gray-900">🎯 Direct Lookup</h3>
+                    <span className="text-xs text-gray-400">Paste a SAM.gov URL or solicitation number</span>
+                </div>
+                <div className="flex gap-2">
+                    <input
+                        type="text"
+                        value={directUrl}
+                        onChange={e => setDirectUrl(e.target.value)}
+                        placeholder="https://sam.gov/opp/... or solicitation number"
+                        disabled={directLoading}
+                        className="flex-1 px-3 py-2 border border-gray-300 rounded-md text-sm focus:ring-blue-500 focus:border-blue-500 disabled:opacity-50"
+                    />
+                    <button
+                        onClick={startDirectLookup}
+                        disabled={directLoading || !directUrl.trim()}
+                        className="px-4 py-2 bg-amber-600 text-white rounded-md font-medium disabled:opacity-50 hover:bg-amber-700 transition-colors text-sm"
+                    >
+                        {directLoading ? 'Looking up...' : 'Lookup'}
+                    </button>
+                </div>
+                <div className="flex gap-2 flex-wrap">
+                    <span className="text-xs text-gray-500 mt-0.5">Seeds:</span>
+                    {seedUrls.map((seed, i) => (
+                        <button
+                            key={i}
+                            onClick={() => { setDirectUrl(seed.url); }}
+                            className="text-xs px-2 py-1 bg-amber-50 text-amber-700 rounded border border-amber-200 hover:bg-amber-100 transition-colors"
+                        >
+                            {seed.label}
+                        </button>
+                    ))}
+                </div>
+                {directLogs.length > 0 && (
+                    <div className="grid grid-cols-1 md:grid-cols-2 gap-3">
+                        <div className="bg-gray-900 rounded-lg p-3 font-mono text-[10px] leading-relaxed text-amber-400 h-64 overflow-y-auto break-all">
+                            {directLogs.map((log, i) => <div key={i}>{log}</div>)}
+                        </div>
+                        <div className="border border-gray-200 bg-gray-50 rounded-lg p-3 h-64 overflow-y-auto">
+                            <h4 className="font-semibold text-gray-700 mb-2 text-sm">Direct Results</h4>
+                            {directResults.length === 0 ? (
+                                <p className="text-xs text-gray-400">No matches yet...</p>
+                            ) : (
+                                <div className="space-y-2">
+                                    {directResults.map((res, i) => (
+                                        <div key={i} className="bg-white p-2 rounded shadow-sm border border-gray-200">
+                                            <div className="text-xs font-semibold text-gray-900">{res.filename}</div>
+                                            <a href={res.link} target="_blank" rel="noopener noreferrer" className="text-xs text-brand-green hover:underline">Download →</a>
+                                        </div>
+                                    ))}
+                                </div>
+                            )}
+                        </div>
+                    </div>
+                )}
             </div>
 
             {/* Run History */}
