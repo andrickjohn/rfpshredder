@@ -1,6 +1,5 @@
 // src/app/api/admin/scrape-sam-direct/route.ts
 // Strategy 3: Direct lookup — paste a SAM.gov URL or solicitation number
-// Uses Puppeteer to navigate directly and download/check attachments
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import { spawn } from 'child_process';
@@ -38,7 +37,7 @@ export async function POST(req: Request) {
         const stream = new ReadableStream({
             start(controller) {
                 const sendJSON = (data: Record<string, unknown>) => {
-                    controller.enqueue(JSON.stringify(data) + '\n');
+                    controller.enqueue(typeof data === 'string' ? data : JSON.stringify(data) + '\n');
                 };
 
                 sendJSON({ type: 'log', message: `🎯 Direct Lookup: ${targetUrl}` });
@@ -53,25 +52,39 @@ export async function POST(req: Request) {
                     }
                 });
 
-                child.stdout.on('data', (data: Buffer) => {
+                child.stdout.on('data', (data) => {
                     const lines = data.toString().split('\n');
                     for (const line of lines) {
                         if (!line.trim()) continue;
                         try {
                             const parsed = JSON.parse(line);
                             sendJSON(parsed);
+                            // Forward results properly
+                            if (parsed.type === 'result') {
+                                // already forwarded as sendJSON
+                            }
                         } catch {
                             sendJSON({ type: 'log', message: line.trim() });
                         }
                     }
                 });
 
-                child.stderr.on('data', (data: Buffer) => {
-                    sendJSON({ type: 'log', message: `⚠️ ${data.toString().trim()}` });
+                child.stderr.on('data', (data) => {
+                    const lines = data.toString().split('\n');
+                    for (const line of lines) {
+                        if (line.trim()) {
+                            sendJSON({ type: 'log', message: `⚠️ ${line.trim()}` });
+                        }
+                    }
                 });
 
-                child.on('close', (code: number) => {
-                    sendJSON({ type: 'log', message: `Process exited (${code})` });
+                child.on('error', (err) => {
+                    sendJSON({ type: 'log', message: `❌ Spawn error: ${err.message}` });
+                    sendJSON({ type: 'done', count: 0 });
+                    controller.close();
+                });
+
+                child.on('close', (code) => {
                     sendJSON({ type: 'done', count: 0 });
                     controller.close();
                 });
