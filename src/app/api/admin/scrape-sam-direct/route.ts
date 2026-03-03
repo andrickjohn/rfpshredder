@@ -84,7 +84,7 @@ export async function POST(req: Request) {
                     controller.close();
                 });
 
-                child.on('close', (code) => {
+                child.on('close', () => {
                     sendJSON({ type: 'done', count: 0 });
                     controller.close();
                 });

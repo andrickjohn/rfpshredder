@@ -1,5 +1,5 @@
 // src/app/api/admin/scrape-sam/route.ts
-// Strategy 1: Consolidated API queries (1-2 calls max) + local cache
+// Fixed: Individual NAICS queries, proper caching, broader search
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import fs from 'fs';
@@ -19,39 +19,26 @@ async function delay(ms: number) {
     return new Promise(resolve => setTimeout(resolve, ms));
 }
 
-async function fetchWithBackoff(url: string, retries = 4, backoff = 3000) {
+async function fetchSafe(url: string, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
             const res = await fetch(url);
             if (res.status === 429 || res.status === 503) {
-                const wait = backoff * Math.pow(2, i);
-                await delay(wait);
+                await delay(3000 * Math.pow(2, i));
                 continue;
             }
             return res;
         } catch (err) {
             if (i === retries - 1) throw err;
-            await delay(backoff);
+            await delay(2000);
         }
     }
-    throw new Error('API limit exceeded after retries');
+    throw new Error('API limit exceeded');
 }
 
-function ensureDir() {
-    if (!fs.existsSync(SAMPLES_DIR)) fs.mkdirSync(SAMPLES_DIR, { recursive: true });
-}
-
-function loadSeen(): string[] {
-    ensureDir();
-    if (fs.existsSync(SEEN_FILE)) {
-        try { return JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8')); } catch { }
-    }
-    return [];
-}
-
-function saveSeen(list: string[]) {
-    fs.writeFileSync(SEEN_FILE, JSON.stringify(list, null, 2));
-}
+function ensureDir() { if (!fs.existsSync(SAMPLES_DIR)) fs.mkdirSync(SAMPLES_DIR, { recursive: true }); }
+function loadSeen(): string[] { ensureDir(); try { return JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8')); } catch { return []; } }
+function saveSeen(list: string[]) { fs.writeFileSync(SEEN_FILE, JSON.stringify(list, null, 2)); }
 
 interface CachedOpp {
     noticeId: string;
@@ -59,22 +46,17 @@ interface CachedOpp {
     solicitationNumber: string;
     resourceLinks: string[];
     typeOfSetAsideDescription?: string;
-    cachedAt: string;
 }
 
-function loadCache(): CachedOpp[] {
+function loadCache(): { opps: CachedOpp[], fresh: boolean } {
     ensureDir();
-    if (fs.existsSync(CACHE_FILE)) {
-        try {
-            const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-            // Cache expires after 24 hours
-            const cutoff = Date.now() - 24 * 60 * 60 * 1000;
-            if (data.timestamp && data.timestamp > cutoff) {
-                return data.opportunities || [];
-            }
-        } catch { }
-    }
-    return [];
+    try {
+        const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        if (data.timestamp && (Date.now() - data.timestamp) < 24 * 60 * 60 * 1000) {
+            return { opps: data.opportunities || [], fresh: true };
+        }
+    } catch { }
+    return { opps: [], fresh: false };
 }
 
 function saveCache(opps: CachedOpp[]) {
@@ -85,7 +67,6 @@ export async function POST(req: Request) {
     try {
         const supabase = await createClient();
         const { data: { user } } = await supabase.auth.getUser();
-
         if (!user || user.email !== 'admin@automatemomentum.com') {
             return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
         }
@@ -110,118 +91,101 @@ export async function POST(req: Request) {
         const stream = new ReadableStream({
             async start(controller) {
                 const sendJSON = (data: Record<string, unknown>) => {
-                    controller.enqueue(JSON.stringify(data) + '\n');
+                    controller.enqueue(typeof data === 'string' ? data : JSON.stringify(data) + '\n');
                 };
 
                 const seenList = loadSeen();
                 sendJSON({ type: 'log', message: `🔍 SAM.gov API Scraper` });
-                sendJSON({ type: 'log', message: `📊 Already seen: ${seenList.length} | Keywords: ${keywords.length}` });
+                sendJSON({ type: 'log', message: `📊 Seen: ${seenList.length} | Keywords: ${keywords.length} | NAICS: ${naicsCodes.length}` });
 
-                // ---- STEP 1: Get opportunities (from cache or 1 API call) ----
-                let opps: CachedOpp[] = loadCache();
-                let usedCache = false;
+                // Check cache first
+                const cache = loadCache();
+                let opps: CachedOpp[] = [];
 
-                if (opps.length > 0) {
-                    usedCache = true;
-                    sendJSON({ type: 'log', message: `📦 Using cached data (${opps.length} opportunities, <24h old)` });
-                    sendJSON({ type: 'log', message: `   ℹ️ Delete sam_samples/opp_cache.json to force fresh API search` });
+                if (cache.fresh && cache.opps.length > 0) {
+                    opps = cache.opps;
+                    sendJSON({ type: 'log', message: `📦 Using cached data (${opps.length} opps, <24h)` });
                 } else {
-                    // SINGLE consolidated API call with all NAICS codes
-                    const ncodesParam = naicsCodes.join(',');
-                    // Use ptype=k (Combined Synopsis/Solicitation) - highest chance of full RFP PDFs
-                    const searchUrl = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=100&ncode=${ncodesParam}&ptype=k&postedFrom=${postedFrom}&postedTo=${postedTo}`;
+                    // INDIVIDUAL queries per NAICS code (comma-separated not supported!)
+                    // Use only first 2 NAICS to stay under 10 req/day limit
+                    const codesToQuery = naicsCodes.slice(0, 2);
+                    sendJSON({ type: 'log', message: `📡 Querying ${codesToQuery.length} NAICS codes (10/day API limit)...` });
 
-                    sendJSON({ type: 'log', message: `📡 Searching: NAICS [${ncodesParam}] | Combined Synopsis/Solicitations` });
-                    sendJSON({ type: 'log', message: `   Date range: ${postedFrom} → ${postedTo}` });
-                    sendJSON({ type: 'log', message: `   ⚡ Using 1 API call (10/day limit)` });
+                    for (const code of codesToQuery) {
+                        sendJSON({ type: 'log', message: `\n  NAICS ${code}...` });
+                        // Don't filter by ptype — get ALL types to maximize results
+                        const url = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=100&ncode=${code}&postedFrom=${postedFrom}&postedTo=${postedTo}`;
 
-                    try {
-                        const res = await fetchWithBackoff(searchUrl);
-                        if (!res.ok) {
-                            const errText = await res.text().catch(() => res.statusText);
-                            sendJSON({ type: 'log', message: `❌ API Error ${res.status}: ${errText.substring(0, 200)}` });
-
-                            if (res.status === 503 || res.status === 429) {
-                                sendJSON({ type: 'log', message: `\n💡 TIP: Your API key is limited to 10 requests/day.` });
-                                sendJSON({ type: 'log', message: `   Try again tomorrow, or use the Browser Engine instead.` });
-                                sendJSON({ type: 'log', message: `   To get 1000 req/day: register entity + request Data Entry role at SAM.gov` });
+                        try {
+                            const res = await fetchSafe(url);
+                            if (!res.ok) {
+                                sendJSON({ type: 'log', message: `  ⚠️ ${res.status}: ${res.statusText}` });
+                                if (res.status === 503 || res.status === 429) {
+                                    sendJSON({ type: 'log', message: `  💡 API limit hit. Try again tomorrow or use Browser Engine.` });
+                                    break;
+                                }
+                                continue;
                             }
-
-                            sendJSON({ type: 'done', count: 0 });
-                            controller.close();
-                            return;
+                            const data = await res.json();
+                            const items = data.opportunitiesData || [];
+                            sendJSON({ type: 'log', message: `  → ${items.length} found` });
+                            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+                            opps = opps.concat(items.map((o: any) => ({
+                                noticeId: o.noticeId || '',
+                                title: o.title || '',
+                                solicitationNumber: o.solicitationNumber || '',
+                                resourceLinks: o.resourceLinks || [],
+                                typeOfSetAsideDescription: o.typeOfSetAsideDescription || ''
+                            })));
+                        } catch (err: unknown) {
+                            sendJSON({ type: 'log', message: `  ❌ ${(err as Error).message}` });
                         }
+                        await delay(1000);
+                    }
 
-                        const data = await res.json();
-                        const rawOpps = data.opportunitiesData || [];
-                        sendJSON({ type: 'log', message: `   → ${rawOpps.length} opportunities found` });
+                    // Deduplicate by noticeId
+                    const seen = new Set<string>();
+                    opps = opps.filter(o => { if (!o.noticeId || seen.has(o.noticeId)) return false; seen.add(o.noticeId); return true; });
 
-                        // Cache them for future runs
-                        // eslint-disable-next-line @typescript-eslint/no-explicit-any
-                        opps = rawOpps.map((o: any) => ({
-                            noticeId: o.noticeId || '',
-                            title: o.title || '',
-                            solicitationNumber: o.solicitationNumber || '',
-                            resourceLinks: o.resourceLinks || [],
-                            typeOfSetAsideDescription: o.typeOfSetAsideDescription || '',
-                            cachedAt: new Date().toISOString()
-                        }));
+                    if (opps.length > 0) {
                         saveCache(opps);
-                        sendJSON({ type: 'log', message: `💾 Cached ${opps.length} opportunities for 24h reuse` });
-
-                    } catch (err: unknown) {
-                        sendJSON({ type: 'log', message: `❌ Fetch error: ${(err as Error).message}` });
-                        sendJSON({ type: 'done', count: 0 });
-                        controller.close();
-                        return;
+                        sendJSON({ type: 'log', message: `💾 Cached ${opps.length} opps for 24h` });
                     }
                 }
 
-                // ---- STEP 2: Filter to unseen opps with resource links ----
-                const unseenWithLinks = opps.filter(o =>
-                    o.noticeId &&
-                    !seenList.includes(o.noticeId) &&
-                    o.resourceLinks.length > 0
-                );
+                // Filter to unseen with attachments, sort by most links first
+                const candidates = opps
+                    .filter(o => o.noticeId && !seenList.includes(o.noticeId) && o.resourceLinks.length > 0)
+                    .sort((a, b) => b.resourceLinks.length - a.resourceLinks.length);
 
-                sendJSON({ type: 'log', message: `\n📋 ${unseenWithLinks.length} unseen opportunities with attachments (of ${opps.length} total)` });
+                sendJSON({ type: 'log', message: `\n📋 ${candidates.length} unseen with attachments (of ${opps.length})` });
 
-                if (unseenWithLinks.length === 0 && usedCache) {
-                    sendJSON({ type: 'log', message: `\n💡 All cached opportunities already checked!` });
-                    sendJSON({ type: 'log', message: `   Delete sam_samples/opp_cache.json to refresh, or try different NAICS codes.` });
+                if (candidates.length === 0) {
+                    sendJSON({ type: 'log', message: `💡 Delete sam_samples/opp_cache.json and seen_solicitations.json to start fresh` });
                 }
 
-                // ---- STEP 3: Download & check PDFs (uses API calls for downloads) ----
                 let successfulDownloads = 0;
                 let checked = 0;
 
-                for (const opp of unseenWithLinks) {
-                    if (successfulDownloads >= 3) break;
-                    if (checked >= 15) {
-                        sendJSON({ type: 'log', message: `\n⏱️ Checked 15 opportunities, stopping to conserve API calls.` });
-                        break;
-                    }
-
+                for (const opp of candidates) {
+                    if (successfulDownloads >= 3 || checked >= 10) break;
                     checked++;
-                    sendJSON({ type: 'log', message: `\n🔎 [${checked}/${unseenWithLinks.length}] ${opp.title}` });
-                    sendJSON({ type: 'log', message: `   Sol: ${opp.solicitationNumber} | Links: ${opp.resourceLinks.length} | Set-aside: ${opp.typeOfSetAsideDescription || 'None'}` });
 
+                    sendJSON({ type: 'log', message: `\n🔎 [${checked}] ${opp.title}` });
+                    sendJSON({ type: 'log', message: `   Sol: ${opp.solicitationNumber} | ${opp.resourceLinks.length} links` });
+
+                    // Try ALL resource links for this opportunity
                     for (const link of opp.resourceLinks) {
                         if (successfulDownloads >= 3) break;
-                        await delay(2000); // Respect rate limits
+                        await delay(2000);
 
                         try {
                             const downloadUrl = link.includes('api_key=') ? link : `${link}${link.includes('?') ? '&' : '?'}api_key=${API_KEY}`;
-
                             sendJSON({ type: 'log', message: `   📥 Downloading...` });
-                            const fileRes = await fetchWithBackoff(downloadUrl);
+                            const fileRes = await fetchSafe(downloadUrl);
 
                             if (!fileRes.ok) {
-                                sendJSON({ type: 'log', message: `   ⚠️ HTTP ${fileRes.status}` });
-                                if (fileRes.status === 503 || fileRes.status === 429) {
-                                    sendJSON({ type: 'log', message: `   🛑 Rate limited — stopping downloads.` });
-                                    checked = 999; // Break outer loop too
-                                }
+                                if (fileRes.status === 503 || fileRes.status === 429) { checked = 999; break; }
                                 continue;
                             }
 
@@ -229,19 +193,14 @@ export async function POST(req: Request) {
                             const filename = contentDisp.split('filename=')[1]?.replace(/"/g, '').trim() || '';
                             const ext = filename.split('.').pop()?.toLowerCase() || '';
 
-                            // Skip non-document files
                             if (['zip', 'xlsx', 'xls', 'csv', 'jpg', 'png', 'gif', 'msg', 'pptx'].includes(ext)) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Skipping ${ext.toUpperCase()}: ${filename}` });
+                                sendJSON({ type: 'log', message: `   ⏭️ ${ext.toUpperCase()}: ${filename}` });
                                 continue;
                             }
 
                             const arrayBuffer = await fileRes.arrayBuffer();
                             const buffer = Buffer.from(arrayBuffer);
-
-                            if (buffer.length < 5000 || buffer.length > 50 * 1024 * 1024) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Size filter: ${(buffer.length / 1024).toFixed(0)}KB` });
-                                continue;
-                            }
+                            if (buffer.length < 5000 || buffer.length > 50 * 1024 * 1024) continue;
 
                             sendJSON({ type: 'log', message: `   📄 ${filename || 'file'} (${(buffer.length / 1024).toFixed(0)}KB)` });
 
@@ -254,59 +213,36 @@ export async function POST(req: Request) {
                                 continue;
                             }
 
-                            if (text.length < 500) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Scanned/image PDF (too little text)` });
-                                continue;
-                            }
+                            if (text.length < 200) { sendJSON({ type: 'log', message: `   ⏭️ Scanned/image PDF` }); continue; }
 
                             const matched = keywords.filter(kw => text.includes(kw));
                             if (matched.length > 0) {
-                                const safeFilename = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}.pdf`;
-                                const filepath = path.join(SAMPLES_DIR, safeFilename);
-                                fs.writeFileSync(filepath, buffer);
-
-                                sendJSON({ type: 'log', message: `   ✅ MATCH! Keywords: "${matched.join('", "')}"` });
-                                sendJSON({ type: 'log', message: `   💾 Saved: ${safeFilename}` });
-                                sendJSON({
-                                    type: 'result',
-                                    match: {
-                                        oppTitle: opp.title,
-                                        solicitation: opp.solicitationNumber,
-                                        link: link,
-                                        filename: safeFilename
-                                    }
-                                });
+                                const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}.pdf`;
+                                fs.writeFileSync(path.join(SAMPLES_DIR, safeName), buffer);
+                                sendJSON({ type: 'log', message: `   ✅ MATCH! "${matched.join('", "')}"` });
+                                sendJSON({ type: 'log', message: `   💾 ${safeName}` });
+                                sendJSON({ type: 'result', match: { oppTitle: opp.title, solicitation: opp.solicitationNumber, link, filename: safeName } });
                                 successfulDownloads++;
-                                break;
                             } else {
-                                sendJSON({ type: 'log', message: `   ❌ No keyword matches` });
+                                sendJSON({ type: 'log', message: `   ❌ No keyword matches in ${(text.length / 1000).toFixed(0)}k chars` });
                             }
                         } catch (err: unknown) {
-                            sendJSON({ type: 'log', message: `   ⚠️ Error: ${(err as Error).message}` });
+                            sendJSON({ type: 'log', message: `   ⚠️ ${(err as Error).message}` });
                         }
                     }
-
                     seenList.push(opp.noticeId);
                     saveSeen(seenList);
                 }
 
-                sendJSON({ type: 'log', message: `\n🏁 Done. Checked ${checked} opps. Found ${successfulDownloads} matching PDFs.` });
-                if (successfulDownloads === 0 && checked > 0) {
-                    sendJSON({ type: 'log', message: `💡 Tips: Try Shuffle NAICS, increase Lookback Days, or use Browser Engine.` });
-                }
+                sendJSON({ type: 'log', message: `\n🏁 Done. ${checked} checked, ${successfulDownloads} matched.` });
                 sendJSON({ type: 'done', count: successfulDownloads });
                 controller.close();
             }
         });
 
         return new Response(stream, {
-            headers: {
-                'Content-Type': 'application/x-ndjson',
-                'Cache-Control': 'no-cache',
-                'Connection': 'keep-alive',
-            },
+            headers: { 'Content-Type': 'application/x-ndjson', 'Cache-Control': 'no-cache', 'Connection': 'keep-alive' },
         });
-
     } catch (error: unknown) {
         return NextResponse.json({ error: (error as Error).message }, { status: 500 });
     }
