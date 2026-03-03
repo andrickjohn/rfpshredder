@@ -1,11 +1,13 @@
 // src/app/api/admin/scrape-sam/route.ts
-// Fixed: Detect HTML-as-PDF, better content inspection, skip non-PDF gracefully
+// Fixed: ZIP extraction, attachment metadata API, proper content detection
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import fs from 'fs';
 import path from 'path';
 // eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
 const pdfParse = require('pdf-parse');
+// eslint-disable-next-line @typescript-eslint/no-var-requires, @typescript-eslint/no-require-imports
+const JSZip = require('jszip');
 
 export const runtime = 'nodejs';
 export const dynamic = 'force-dynamic';
@@ -45,6 +47,39 @@ function saveCache(opps: CachedOpp[]) {
     fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp: Date.now(), opportunities: opps }, null, 2));
 }
 
+// Extract PDFs from a ZIP buffer
+async function extractPdfsFromZip(zipBuffer: Buffer): Promise<{ name: string, buffer: Buffer }[]> {
+    const pdfs: { name: string, buffer: Buffer }[] = [];
+    try {
+        const zip = await JSZip.loadAsync(zipBuffer);
+        for (const [filename, file] of Object.entries(zip.files)) {
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const f = file as any;
+            if (f.dir) continue;
+            const lower = filename.toLowerCase();
+            if (lower.endsWith('.pdf') || lower.endsWith('.doc') || lower.endsWith('.docx')) {
+                const buf = await f.async('nodebuffer');
+                if (buf.length > 1000) {
+                    pdfs.push({ name: filename, buffer: buf });
+                }
+            }
+        }
+    } catch { /* not a valid zip */ }
+    return pdfs;
+}
+
+// Check keywords in a PDF buffer
+async function checkPdfKeywords(buffer: Buffer, keywords: string[]): Promise<string[]> {
+    try {
+        const parsed = await pdfParse(buffer);
+        const text = parsed.text.toLowerCase();
+        if (text.length < 100) return [];
+        return keywords.filter(kw => text.includes(kw));
+    } catch {
+        return [];
+    }
+}
+
 export async function POST(req: Request) {
     try {
         const supabase = await createClient();
@@ -71,34 +106,33 @@ export async function POST(req: Request) {
 
         const stream = new ReadableStream({
             async start(controller) {
-                const sendJSON = (data: Record<string, unknown>) => {
+                const send = (data: Record<string, unknown>) => {
                     controller.enqueue(typeof data === 'string' ? data : JSON.stringify(data) + '\n');
                 };
 
                 const seenList = loadSeen();
-                sendJSON({ type: 'log', message: `🔍 SAM.gov API | Seen: ${seenList.length} | NAICS: ${naicsCodes.length}` });
+                send({ type: 'log', message: `🔍 SAM.gov API | Seen: ${seenList.length} | NAICS: ${naicsCodes.length}` });
 
                 let opps = loadCache();
 
                 if (opps.length > 0) {
-                    sendJSON({ type: 'log', message: `📦 Cached: ${opps.length} opps (<24h)` });
+                    send({ type: 'log', message: `📦 Cached: ${opps.length} opps` });
                 } else {
-                    // Query first 2 NAICS codes individually (10/day limit)
                     const codes = naicsCodes.slice(0, 2);
-                    sendJSON({ type: 'log', message: `📡 Querying ${codes.length} NAICS codes...` });
+                    send({ type: 'log', message: `📡 Querying ${codes.length} NAICS...` });
 
                     for (const code of codes) {
                         const url = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=100&ncode=${code}&postedFrom=${postedFrom}&postedTo=${postedTo}`;
                         try {
                             const res = await fetchSafe(url);
                             if (!res.ok) {
-                                sendJSON({ type: 'log', message: `  ⚠️ NAICS ${code}: HTTP ${res.status}` });
+                                send({ type: 'log', message: `  ⚠️ NAICS ${code}: HTTP ${res.status}` });
                                 if (res.status === 503 || res.status === 429) break;
                                 continue;
                             }
                             const data = await res.json();
                             const items = data.opportunitiesData || [];
-                            sendJSON({ type: 'log', message: `  NAICS ${code}: ${items.length} found` });
+                            send({ type: 'log', message: `  NAICS ${code}: ${items.length} opps` });
                             // eslint-disable-next-line @typescript-eslint/no-explicit-any
                             opps = opps.concat(items.map((o: any) => ({
                                 noticeId: o.noticeId || '', title: o.title || '',
@@ -106,22 +140,19 @@ export async function POST(req: Request) {
                                 resourceLinks: o.resourceLinks || [],
                             })));
                         } catch (err: unknown) {
-                            sendJSON({ type: 'log', message: `  ❌ NAICS ${code}: ${(err as Error).message}` });
+                            send({ type: 'log', message: `  ❌ ${(err as Error).message}` });
                         }
                         await delay(1000);
                     }
-                    // Dedup
                     const ids = new Set<string>();
                     opps = opps.filter(o => { if (!o.noticeId || ids.has(o.noticeId)) return false; ids.add(o.noticeId); return true; });
                     if (opps.length > 0) saveCache(opps);
-                    sendJSON({ type: 'log', message: `💾 Total: ${opps.length} unique opps` });
+                    send({ type: 'log', message: `💾 ${opps.length} unique opps` });
                 }
 
-                const candidates = opps
-                    .filter(o => o.noticeId && !seenList.includes(o.noticeId) && o.resourceLinks.length > 0)
+                const candidates = opps.filter(o => o.noticeId && !seenList.includes(o.noticeId) && o.resourceLinks.length > 0)
                     .sort((a, b) => b.resourceLinks.length - a.resourceLinks.length);
-
-                sendJSON({ type: 'log', message: `📋 ${candidates.length} unseen with links` });
+                send({ type: 'log', message: `📋 ${candidates.length} unseen with attachments` });
 
                 let downloads = 0;
                 let checked = 0;
@@ -129,8 +160,8 @@ export async function POST(req: Request) {
                 for (const opp of candidates) {
                     if (downloads >= 5 || checked >= 15) break;
                     checked++;
-                    sendJSON({ type: 'log', message: `\n🔎 [${checked}/${candidates.length}] ${opp.title.substring(0, 60)}` });
-                    sendJSON({ type: 'log', message: `   ${opp.resourceLinks.length} attachment links` });
+                    send({ type: 'log', message: `\n🔎 [${checked}/${candidates.length}] ${opp.title.substring(0, 50)}` });
+                    send({ type: 'log', message: `   ${opp.resourceLinks.length} links | Sol: ${opp.solicitationNumber}` });
 
                     for (const link of opp.resourceLinks) {
                         if (downloads >= 5) break;
@@ -138,94 +169,85 @@ export async function POST(req: Request) {
 
                         try {
                             const dlUrl = link.includes('api_key=') ? link : `${link}${link.includes('?') ? '&' : '?'}api_key=${API_KEY}`;
-                            sendJSON({ type: 'log', message: `   📥 Downloading...` });
+                            send({ type: 'log', message: `   📥 Fetching...` });
                             const fileRes = await fetchSafe(dlUrl);
 
                             if (!fileRes.ok) {
-                                sendJSON({ type: 'log', message: `   ⚠️ HTTP ${fileRes.status}` });
+                                send({ type: 'log', message: `   ⚠️ HTTP ${fileRes.status}` });
                                 if (fileRes.status === 503 || fileRes.status === 429) { checked = 999; break; }
                                 continue;
                             }
 
-                            // Check Content-Type header first
-                            const ct = fileRes.headers.get('content-type') || '';
+                            const arrayBuffer = await fileRes.arrayBuffer();
+                            const buffer = Buffer.from(arrayBuffer);
+                            if (buffer.length < 1000) continue;
+
+                            const header = buffer.slice(0, 5).toString('ascii');
                             const cd = fileRes.headers.get('content-disposition') || '';
                             const filename = cd.split('filename=')[1]?.replace(/"/g, '').trim() || '';
 
-                            const arrayBuffer = await fileRes.arrayBuffer();
-                            const buffer = Buffer.from(arrayBuffer);
+                            // Handle ZIP files — extract PDFs from inside
+                            if (header.startsWith('PK')) {
+                                send({ type: 'log', message: `   📦 ZIP archive (${(buffer.length / 1024).toFixed(0)}KB) — extracting...` });
+                                const pdfs = await extractPdfsFromZip(buffer);
+                                send({ type: 'log', message: `   📄 Found ${pdfs.length} documents inside ZIP` });
 
-                            if (buffer.length < 1000) { continue; }
-                            if (buffer.length > 50 * 1024 * 1024) { continue; }
+                                for (const pdf of pdfs) {
+                                    if (downloads >= 5) break;
+                                    send({ type: 'log', message: `   📄 ${pdf.name} (${(pdf.buffer.length / 1024).toFixed(0)}KB)` });
 
-                            // Check magic bytes: real PDFs start with %PDF
-                            const header = buffer.slice(0, 10).toString('ascii');
-                            const isPdf = header.startsWith('%PDF');
-                            const isHtml = header.includes('<') || header.includes('<!') || header.includes('<?xml');
-
-                            if (isHtml) {
-                                // SAM.gov returned an HTML error page instead of the actual file
-                                const htmlSnippet = buffer.slice(0, 200).toString('utf8');
-                                if (htmlSnippet.includes('Access Denied') || htmlSnippet.includes('Forbidden')) {
-                                    sendJSON({ type: 'log', message: `   🔒 Access Denied (auth required)` });
-                                } else {
-                                    sendJSON({ type: 'log', message: `   ⚠️ Got HTML, not PDF (SAM.gov error page)` });
+                                    const matched = await checkPdfKeywords(pdf.buffer, keywords);
+                                    if (matched.length > 0) {
+                                        const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}_${downloads}.pdf`;
+                                        fs.writeFileSync(path.join(SAMPLES_DIR, safeName), pdf.buffer);
+                                        send({ type: 'log', message: `   ✅ MATCH! "${matched.join('", "')}"` });
+                                        send({ type: 'log', message: `   💾 ${safeName}` });
+                                        send({ type: 'result', match: { oppTitle: opp.title, solicitation: opp.solicitationNumber, link, filename: safeName } });
+                                        downloads++;
+                                    } else {
+                                        send({ type: 'log', message: `   ❌ No keywords in ${pdf.name}` });
+                                    }
                                 }
                                 continue;
                             }
 
-                            const ext = filename.split('.').pop()?.toLowerCase() || '';
-                            if (['zip', 'xlsx', 'xls', 'csv', 'jpg', 'png', 'gif', 'msg', 'pptx'].includes(ext)) {
-                                sendJSON({ type: 'log', message: `   ⏭️ ${ext.toUpperCase()}: ${filename}` });
+                            // Handle HTML error pages
+                            if (header.includes('<') || header.includes('<!')) {
+                                const snippet = buffer.slice(0, 200).toString('utf8');
+                                if (snippet.includes('Access Denied') || snippet.includes('Forbidden')) {
+                                    send({ type: 'log', message: `   🔒 Access Denied` });
+                                } else {
+                                    send({ type: 'log', message: `   ⚠️ HTML response (not a file)` });
+                                }
                                 continue;
                             }
 
-                            if (!isPdf && !ct.includes('pdf')) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Not PDF (${ct || 'unknown type'}, header: "${header.substring(0, 5)}")` });
-                                continue;
-                            }
-
-                            sendJSON({ type: 'log', message: `   📄 ${filename || 'file'} (${(buffer.length / 1024).toFixed(0)}KB) ✓ PDF` });
-
-                            let text = '';
-                            try {
-                                const parsed = await pdfParse(buffer);
-                                text = parsed.text.toLowerCase();
-                            } catch {
-                                // Try saving anyway — might be encrypted/protected but still valid
-                                sendJSON({ type: 'log', message: `   ⚠️ Protected/encrypted PDF — saving anyway` });
-                                const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}.pdf`;
-                                fs.writeFileSync(path.join(SAMPLES_DIR, safeName), buffer);
-                                sendJSON({ type: 'log', message: `   💾 ${safeName} (needs manual review)` });
-                                continue;
-                            }
-
-                            if (text.length < 100) {
-                                sendJSON({ type: 'log', message: `   ⏭️ Scanned image PDF (${text.length} chars)` });
-                                continue;
-                            }
-
-                            const matched = keywords.filter(kw => text.includes(kw));
-                            if (matched.length > 0) {
-                                const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}_${downloads}.pdf`;
-                                fs.writeFileSync(path.join(SAMPLES_DIR, safeName), buffer);
-                                sendJSON({ type: 'log', message: `   ✅ MATCH! "${matched.join('", "')}"` });
-                                sendJSON({ type: 'log', message: `   💾 ${safeName}` });
-                                sendJSON({ type: 'result', match: { oppTitle: opp.title, solicitation: opp.solicitationNumber, link, filename: safeName } });
-                                downloads++;
+                            // Handle actual PDFs
+                            if (header.startsWith('%PDF')) {
+                                send({ type: 'log', message: `   📄 ${filename || 'file'} (${(buffer.length / 1024).toFixed(0)}KB) ✓ PDF` });
+                                const matched = await checkPdfKeywords(buffer, keywords);
+                                if (matched.length > 0) {
+                                    const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}_${downloads}.pdf`;
+                                    fs.writeFileSync(path.join(SAMPLES_DIR, safeName), buffer);
+                                    send({ type: 'log', message: `   ✅ MATCH! "${matched.join('", "')}"` });
+                                    send({ type: 'result', match: { oppTitle: opp.title, solicitation: opp.solicitationNumber, link, filename: safeName } });
+                                    downloads++;
+                                } else {
+                                    send({ type: 'log', message: `   ❌ No keywords` });
+                                }
                             } else {
-                                sendJSON({ type: 'log', message: `   ❌ No keywords (${(text.length / 1000).toFixed(0)}k chars scanned)` });
+                                send({ type: 'log', message: `   ⏭️ Unknown format (header: "${header}")` });
                             }
                         } catch (err: unknown) {
-                            sendJSON({ type: 'log', message: `   ⚠️ ${(err as Error).message}` });
+                            send({ type: 'log', message: `   ⚠️ ${(err as Error).message}` });
                         }
                     }
                     seenList.push(opp.noticeId);
                     saveSeen(seenList);
                 }
 
-                sendJSON({ type: 'log', message: `\n🏁 ${checked} checked, ${downloads} saved.` });
-                sendJSON({ type: 'done', count: downloads });
+                send({ type: 'log', message: `\n🏁 ${checked} checked, ${downloads} saved.` });
+                send({ type: 'done', count: downloads });
                 controller.close();
             }
         });
