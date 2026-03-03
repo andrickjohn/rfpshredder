@@ -164,6 +164,36 @@ export function AuthForm({ mode }: AuthFormProps) {
                 ? 'Send Magic Link'
                 : 'Send Reset Link'}
       </button>
+
+      {process.env.NODE_ENV === 'development' && mode === 'login' && (
+        <button
+          type="button"
+          onClick={async (e) => {
+            e.preventDefault();
+            setEmail('admin@automatemomentum.com');
+            setPassword('password123');
+            // we need to set the state and then call the api immediately
+            // because setState is async
+            setLoading(true);
+            setError(null);
+            setMessage(null);
+            const { error: signInError } = await supabase.auth.signInWithPassword({
+              email: 'admin@automatemomentum.com',
+              password: 'password123',
+            });
+            if (signInError) {
+              setError('Failed to auto-login. Did you run the set-dev-password script?');
+              setLoading(false);
+              return;
+            }
+            router.push('/dashboard');
+            router.refresh();
+          }}
+          className="w-full mt-2 py-2 px-4 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 transition-colors"
+        >
+          🚀 Local Dev: Auto-Login as Admin
+        </button>
+      )}
     </form>
   );
 }
