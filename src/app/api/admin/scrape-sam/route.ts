@@ -1,5 +1,5 @@
 // src/app/api/admin/scrape-sam/route.ts
-// Fixed: Individual NAICS queries, proper caching, broader search
+// Fixed: Detect HTML-as-PDF, better content inspection, skip non-PDF gracefully
 import { NextResponse } from 'next/server';
 import { createClient } from '@/lib/supabase/server';
 import fs from 'fs';
@@ -15,50 +15,32 @@ const SAMPLES_DIR = path.join(process.cwd(), 'sam_samples');
 const SEEN_FILE = path.join(SAMPLES_DIR, 'seen_solicitations.json');
 const CACHE_FILE = path.join(SAMPLES_DIR, 'opp_cache.json');
 
-async function delay(ms: number) {
-    return new Promise(resolve => setTimeout(resolve, ms));
-}
+async function delay(ms: number) { return new Promise(r => setTimeout(r, ms)); }
 
 async function fetchSafe(url: string, retries = 3) {
     for (let i = 0; i < retries; i++) {
         try {
             const res = await fetch(url);
-            if (res.status === 429 || res.status === 503) {
-                await delay(3000 * Math.pow(2, i));
-                continue;
-            }
+            if (res.status === 429 || res.status === 503) { await delay(3000 * Math.pow(2, i)); continue; }
             return res;
-        } catch (err) {
-            if (i === retries - 1) throw err;
-            await delay(2000);
-        }
+        } catch (err) { if (i === retries - 1) throw err; await delay(2000); }
     }
-    throw new Error('API limit exceeded');
+    throw new Error('API exhausted');
 }
 
 function ensureDir() { if (!fs.existsSync(SAMPLES_DIR)) fs.mkdirSync(SAMPLES_DIR, { recursive: true }); }
 function loadSeen(): string[] { ensureDir(); try { return JSON.parse(fs.readFileSync(SEEN_FILE, 'utf8')); } catch { return []; } }
 function saveSeen(list: string[]) { fs.writeFileSync(SEEN_FILE, JSON.stringify(list, null, 2)); }
 
-interface CachedOpp {
-    noticeId: string;
-    title: string;
-    solicitationNumber: string;
-    resourceLinks: string[];
-    typeOfSetAsideDescription?: string;
-}
-
-function loadCache(): { opps: CachedOpp[], fresh: boolean } {
+interface CachedOpp { noticeId: string; title: string; solicitationNumber: string; resourceLinks: string[]; }
+function loadCache(): CachedOpp[] {
     ensureDir();
     try {
-        const data = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
-        if (data.timestamp && (Date.now() - data.timestamp) < 24 * 60 * 60 * 1000) {
-            return { opps: data.opportunities || [], fresh: true };
-        }
+        const d = JSON.parse(fs.readFileSync(CACHE_FILE, 'utf8'));
+        if (d.timestamp && (Date.now() - d.timestamp) < 24 * 3600000) return d.opportunities || [];
     } catch { }
-    return { opps: [], fresh: false };
+    return [];
 }
-
 function saveCache(opps: CachedOpp[]) {
     fs.writeFileSync(CACHE_FILE, JSON.stringify({ timestamp: Date.now(), opportunities: opps }, null, 2));
 }
@@ -84,8 +66,7 @@ export async function POST(req: Request) {
 
         const today = new Date();
         const postedTo = `${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getDate().toString().padStart(2, '0')}/${today.getFullYear()}`;
-        const past = new Date(today);
-        past.setDate(past.getDate() - lookbackDays);
+        const past = new Date(today); past.setDate(past.getDate() - lookbackDays);
         const postedFrom = `${(past.getMonth() + 1).toString().padStart(2, '0')}/${past.getDate().toString().padStart(2, '0')}/${past.getFullYear()}`;
 
         const stream = new ReadableStream({
@@ -95,136 +76,145 @@ export async function POST(req: Request) {
                 };
 
                 const seenList = loadSeen();
-                sendJSON({ type: 'log', message: `🔍 SAM.gov API Scraper` });
-                sendJSON({ type: 'log', message: `📊 Seen: ${seenList.length} | Keywords: ${keywords.length} | NAICS: ${naicsCodes.length}` });
+                sendJSON({ type: 'log', message: `🔍 SAM.gov API | Seen: ${seenList.length} | NAICS: ${naicsCodes.length}` });
 
-                // Check cache first
-                const cache = loadCache();
-                let opps: CachedOpp[] = [];
+                let opps = loadCache();
 
-                if (cache.fresh && cache.opps.length > 0) {
-                    opps = cache.opps;
-                    sendJSON({ type: 'log', message: `📦 Using cached data (${opps.length} opps, <24h)` });
+                if (opps.length > 0) {
+                    sendJSON({ type: 'log', message: `📦 Cached: ${opps.length} opps (<24h)` });
                 } else {
-                    // INDIVIDUAL queries per NAICS code (comma-separated not supported!)
-                    // Use only first 2 NAICS to stay under 10 req/day limit
-                    const codesToQuery = naicsCodes.slice(0, 2);
-                    sendJSON({ type: 'log', message: `📡 Querying ${codesToQuery.length} NAICS codes (10/day API limit)...` });
+                    // Query first 2 NAICS codes individually (10/day limit)
+                    const codes = naicsCodes.slice(0, 2);
+                    sendJSON({ type: 'log', message: `📡 Querying ${codes.length} NAICS codes...` });
 
-                    for (const code of codesToQuery) {
-                        sendJSON({ type: 'log', message: `\n  NAICS ${code}...` });
-                        // Don't filter by ptype — get ALL types to maximize results
+                    for (const code of codes) {
                         const url = `https://api.sam.gov/opportunities/v2/search?api_key=${API_KEY}&limit=100&ncode=${code}&postedFrom=${postedFrom}&postedTo=${postedTo}`;
-
                         try {
                             const res = await fetchSafe(url);
                             if (!res.ok) {
-                                sendJSON({ type: 'log', message: `  ⚠️ ${res.status}: ${res.statusText}` });
-                                if (res.status === 503 || res.status === 429) {
-                                    sendJSON({ type: 'log', message: `  💡 API limit hit. Try again tomorrow or use Browser Engine.` });
-                                    break;
-                                }
+                                sendJSON({ type: 'log', message: `  ⚠️ NAICS ${code}: HTTP ${res.status}` });
+                                if (res.status === 503 || res.status === 429) break;
                                 continue;
                             }
                             const data = await res.json();
                             const items = data.opportunitiesData || [];
-                            sendJSON({ type: 'log', message: `  → ${items.length} found` });
+                            sendJSON({ type: 'log', message: `  NAICS ${code}: ${items.length} found` });
                             // eslint-disable-next-line @typescript-eslint/no-explicit-any
                             opps = opps.concat(items.map((o: any) => ({
-                                noticeId: o.noticeId || '',
-                                title: o.title || '',
+                                noticeId: o.noticeId || '', title: o.title || '',
                                 solicitationNumber: o.solicitationNumber || '',
                                 resourceLinks: o.resourceLinks || [],
-                                typeOfSetAsideDescription: o.typeOfSetAsideDescription || ''
                             })));
                         } catch (err: unknown) {
-                            sendJSON({ type: 'log', message: `  ❌ ${(err as Error).message}` });
+                            sendJSON({ type: 'log', message: `  ❌ NAICS ${code}: ${(err as Error).message}` });
                         }
                         await delay(1000);
                     }
-
-                    // Deduplicate by noticeId
-                    const seen = new Set<string>();
-                    opps = opps.filter(o => { if (!o.noticeId || seen.has(o.noticeId)) return false; seen.add(o.noticeId); return true; });
-
-                    if (opps.length > 0) {
-                        saveCache(opps);
-                        sendJSON({ type: 'log', message: `💾 Cached ${opps.length} opps for 24h` });
-                    }
+                    // Dedup
+                    const ids = new Set<string>();
+                    opps = opps.filter(o => { if (!o.noticeId || ids.has(o.noticeId)) return false; ids.add(o.noticeId); return true; });
+                    if (opps.length > 0) saveCache(opps);
+                    sendJSON({ type: 'log', message: `💾 Total: ${opps.length} unique opps` });
                 }
 
-                // Filter to unseen with attachments, sort by most links first
                 const candidates = opps
                     .filter(o => o.noticeId && !seenList.includes(o.noticeId) && o.resourceLinks.length > 0)
                     .sort((a, b) => b.resourceLinks.length - a.resourceLinks.length);
 
-                sendJSON({ type: 'log', message: `\n📋 ${candidates.length} unseen with attachments (of ${opps.length})` });
+                sendJSON({ type: 'log', message: `📋 ${candidates.length} unseen with links` });
 
-                if (candidates.length === 0) {
-                    sendJSON({ type: 'log', message: `💡 Delete sam_samples/opp_cache.json and seen_solicitations.json to start fresh` });
-                }
-
-                let successfulDownloads = 0;
+                let downloads = 0;
                 let checked = 0;
 
                 for (const opp of candidates) {
-                    if (successfulDownloads >= 3 || checked >= 10) break;
+                    if (downloads >= 5 || checked >= 15) break;
                     checked++;
+                    sendJSON({ type: 'log', message: `\n🔎 [${checked}/${candidates.length}] ${opp.title.substring(0, 60)}` });
+                    sendJSON({ type: 'log', message: `   ${opp.resourceLinks.length} attachment links` });
 
-                    sendJSON({ type: 'log', message: `\n🔎 [${checked}] ${opp.title}` });
-                    sendJSON({ type: 'log', message: `   Sol: ${opp.solicitationNumber} | ${opp.resourceLinks.length} links` });
-
-                    // Try ALL resource links for this opportunity
                     for (const link of opp.resourceLinks) {
-                        if (successfulDownloads >= 3) break;
-                        await delay(2000);
+                        if (downloads >= 5) break;
+                        await delay(1500);
 
                         try {
-                            const downloadUrl = link.includes('api_key=') ? link : `${link}${link.includes('?') ? '&' : '?'}api_key=${API_KEY}`;
+                            const dlUrl = link.includes('api_key=') ? link : `${link}${link.includes('?') ? '&' : '?'}api_key=${API_KEY}`;
                             sendJSON({ type: 'log', message: `   📥 Downloading...` });
-                            const fileRes = await fetchSafe(downloadUrl);
+                            const fileRes = await fetchSafe(dlUrl);
 
                             if (!fileRes.ok) {
+                                sendJSON({ type: 'log', message: `   ⚠️ HTTP ${fileRes.status}` });
                                 if (fileRes.status === 503 || fileRes.status === 429) { checked = 999; break; }
                                 continue;
                             }
 
-                            const contentDisp = fileRes.headers.get('content-disposition') || '';
-                            const filename = contentDisp.split('filename=')[1]?.replace(/"/g, '').trim() || '';
-                            const ext = filename.split('.').pop()?.toLowerCase() || '';
+                            // Check Content-Type header first
+                            const ct = fileRes.headers.get('content-type') || '';
+                            const cd = fileRes.headers.get('content-disposition') || '';
+                            const filename = cd.split('filename=')[1]?.replace(/"/g, '').trim() || '';
 
+                            const arrayBuffer = await fileRes.arrayBuffer();
+                            const buffer = Buffer.from(arrayBuffer);
+
+                            if (buffer.length < 1000) { continue; }
+                            if (buffer.length > 50 * 1024 * 1024) { continue; }
+
+                            // Check magic bytes: real PDFs start with %PDF
+                            const header = buffer.slice(0, 10).toString('ascii');
+                            const isPdf = header.startsWith('%PDF');
+                            const isHtml = header.includes('<') || header.includes('<!') || header.includes('<?xml');
+
+                            if (isHtml) {
+                                // SAM.gov returned an HTML error page instead of the actual file
+                                const htmlSnippet = buffer.slice(0, 200).toString('utf8');
+                                if (htmlSnippet.includes('Access Denied') || htmlSnippet.includes('Forbidden')) {
+                                    sendJSON({ type: 'log', message: `   🔒 Access Denied (auth required)` });
+                                } else {
+                                    sendJSON({ type: 'log', message: `   ⚠️ Got HTML, not PDF (SAM.gov error page)` });
+                                }
+                                continue;
+                            }
+
+                            const ext = filename.split('.').pop()?.toLowerCase() || '';
                             if (['zip', 'xlsx', 'xls', 'csv', 'jpg', 'png', 'gif', 'msg', 'pptx'].includes(ext)) {
                                 sendJSON({ type: 'log', message: `   ⏭️ ${ext.toUpperCase()}: ${filename}` });
                                 continue;
                             }
 
-                            const arrayBuffer = await fileRes.arrayBuffer();
-                            const buffer = Buffer.from(arrayBuffer);
-                            if (buffer.length < 5000 || buffer.length > 50 * 1024 * 1024) continue;
+                            if (!isPdf && !ct.includes('pdf')) {
+                                sendJSON({ type: 'log', message: `   ⏭️ Not PDF (${ct || 'unknown type'}, header: "${header.substring(0, 5)}")` });
+                                continue;
+                            }
 
-                            sendJSON({ type: 'log', message: `   📄 ${filename || 'file'} (${(buffer.length / 1024).toFixed(0)}KB)` });
+                            sendJSON({ type: 'log', message: `   📄 ${filename || 'file'} (${(buffer.length / 1024).toFixed(0)}KB) ✓ PDF` });
 
                             let text = '';
                             try {
                                 const parsed = await pdfParse(buffer);
                                 text = parsed.text.toLowerCase();
                             } catch {
-                                sendJSON({ type: 'log', message: `   ❌ Not a readable PDF` });
+                                // Try saving anyway — might be encrypted/protected but still valid
+                                sendJSON({ type: 'log', message: `   ⚠️ Protected/encrypted PDF — saving anyway` });
+                                const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}.pdf`;
+                                fs.writeFileSync(path.join(SAMPLES_DIR, safeName), buffer);
+                                sendJSON({ type: 'log', message: `   💾 ${safeName} (needs manual review)` });
                                 continue;
                             }
 
-                            if (text.length < 200) { sendJSON({ type: 'log', message: `   ⏭️ Scanned/image PDF` }); continue; }
+                            if (text.length < 100) {
+                                sendJSON({ type: 'log', message: `   ⏭️ Scanned image PDF (${text.length} chars)` });
+                                continue;
+                            }
 
                             const matched = keywords.filter(kw => text.includes(kw));
                             if (matched.length > 0) {
-                                const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}.pdf`;
+                                const safeName = `SAM_API_${opp.solicitationNumber?.replace(/[^a-zA-Z0-9]/g, '_') || Date.now()}_${downloads}.pdf`;
                                 fs.writeFileSync(path.join(SAMPLES_DIR, safeName), buffer);
                                 sendJSON({ type: 'log', message: `   ✅ MATCH! "${matched.join('", "')}"` });
                                 sendJSON({ type: 'log', message: `   💾 ${safeName}` });
                                 sendJSON({ type: 'result', match: { oppTitle: opp.title, solicitation: opp.solicitationNumber, link, filename: safeName } });
-                                successfulDownloads++;
+                                downloads++;
                             } else {
-                                sendJSON({ type: 'log', message: `   ❌ No keyword matches in ${(text.length / 1000).toFixed(0)}k chars` });
+                                sendJSON({ type: 'log', message: `   ❌ No keywords (${(text.length / 1000).toFixed(0)}k chars scanned)` });
                             }
                         } catch (err: unknown) {
                             sendJSON({ type: 'log', message: `   ⚠️ ${(err as Error).message}` });
@@ -234,8 +224,8 @@ export async function POST(req: Request) {
                     saveSeen(seenList);
                 }
 
-                sendJSON({ type: 'log', message: `\n🏁 Done. ${checked} checked, ${successfulDownloads} matched.` });
-                sendJSON({ type: 'done', count: successfulDownloads });
+                sendJSON({ type: 'log', message: `\n🏁 ${checked} checked, ${downloads} saved.` });
+                sendJSON({ type: 'done', count: downloads });
                 controller.close();
             }
         });
