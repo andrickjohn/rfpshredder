@@ -53,7 +53,7 @@ export async function POST(request: Request) {
     // 3. Check subscription / trial status
     const { data: profile } = await supabase
       .from('profiles')
-      .select('subscription_status, subscription_tier, trial_shreds_used, email')
+      .select('subscription_status, subscription_tier, trial_shreds_used, email, preferred_llm_model')
       .eq('id', user.id)
       .single();
 
@@ -63,6 +63,8 @@ export async function POST(request: Request) {
         { status: 404 }
       );
     }
+
+    const { preferred_llm_model: preferredModel = 'claude-3-5-haiku-20241022' } = profile;
 
     const isSuperAdmin = profile.email === 'admin@automatemomentum.com';
     const isTrial = profile.subscription_status === 'trial';
@@ -202,29 +204,32 @@ export async function POST(request: Request) {
           sendEvent({ type: 'progress', step: 2, message: `Parsing document structure (${parseResult!.totalPages} pages)...` });
           const chunks = chunkText(parseResult!.pages);
 
-          // 9. Extract requirements via Claude API
-          sendEvent({ type: 'progress', step: 3, message: `Extracting Section L & M requirements (0/${chunks.length} chunks)...`, current: 0, total: chunks.length });
-          const requirements = await extractRequirements(
+          // 9. Extract requirements via LLM
+          sendEvent({ type: 'progress', step: 3, message: `Extracting Section L & M requirements (0/${chunks.length} chunks)...`, current: 0, total: chunks.length, runningCost: 0, modelName: preferredModel });
+          const { requirements, totalCost } = await extractRequirements(
             chunks,
             sections.sectionL,
             sections.sectionM,
-            (currentChunk, totalChunks) => {
+            (currentChunk, totalChunks, accumulatedCost) => {
               sendEvent({
                 type: 'progress',
                 step: 3,
                 message: `Extracting Section L & M requirements (${currentChunk}/${totalChunks} chunks)...`,
                 current: currentChunk,
-                total: totalChunks
+                total: totalChunks,
+                runningCost: accumulatedCost,
+                modelName: preferredModel
               });
-            }
+            },
+            preferredModel
           );
 
           // 10. Cross-reference L to M
-          sendEvent({ type: 'progress', step: 5, message: 'Generating cross-references...' });
+          sendEvent({ type: 'progress', step: 5, message: 'Generating cross-references...', runningCost: totalCost, modelName: preferredModel });
           const { requirements: crossRefReqs, crossRefs } = generateCrossReferences(requirements);
 
           // 11. Generate Excel
-          sendEvent({ type: 'progress', step: 6, message: 'Building Excel compliance matrix...' });
+          sendEvent({ type: 'progress', step: 6, message: 'Building Excel compliance matrix...', runningCost: totalCost, modelName: preferredModel });
           const excelBuffer = await generateExcel(crossRefReqs, crossRefs, {
             totalPages: parseResult!.totalPages,
             processingTimeMs: Date.now() - startTime,

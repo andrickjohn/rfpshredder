@@ -188,7 +188,7 @@ async function scrapeSamUI() {
         if (totalDownloads >= 5) break;
         console.log(`\n[UI] 📡 NAICS ${naics}...`);
 
-        const searchUrl = `https://sam.gov/search/?index=opp&page=1&pageSize=25&sort=-modifiedDate&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5Bnaics%5D%5B0%5D%5Bkey%5D=${naics}&sfm%5Bnaics%5D%5B0%5D%5Bvalue%5D=${naics}`;
+        const searchUrl = `https://sam.gov/search/?index=opp&page=3&pageSize=25&sort=-modifiedDate&sfm%5Bstatus%5D%5Bis_active%5D=true&sfm%5Bnaics%5D%5B0%5D%5Bkey%5D=${naics}&sfm%5Bnaics%5D%5B0%5D%5Bvalue%5D=${naics}`;
 
         try { await page.goto(searchUrl, { waitUntil: 'networkidle2', timeout: 60000 }); }
         catch { console.log(`[UI] ⚠️ Search timeout`); continue; }
@@ -207,7 +207,7 @@ async function scrapeSamUI() {
 
         console.log(`[UI] ${oppLinks.length} listings`);
 
-        for (const oppUrl of oppLinks.slice(0, 10)) {
+        for (const oppUrl of oppLinks.slice(0, 25)) {
             if (totalDownloads >= 5) break;
             const match = oppUrl.match(/\/opp\/([^/]+)/);
             const noticeId = match ? match[1] : null;

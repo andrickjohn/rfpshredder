@@ -122,8 +122,8 @@ async function scrapeSam() {
     let successfulDownloads = 0;
 
     for (const opp of filteredOpps) {
-        if (successfulDownloads >= 3) {
-            console.log('✅ Found 3 samples! Stopping.');
+        if (successfulDownloads >= 5) {
+            console.log('✅ Found 5 new samples! Stopping.');
             break;
         }
 
@@ -163,6 +163,14 @@ async function scrapeSam() {
                     continue;
                 }
 
+                const safeFilename = item.filename ? item.filename.replace(/[^a-z0-9.-]/gi, '_') : `${opp.solicitationNumber}.pdf`;
+                const filepath = path.join(OUTPUT_DIR, safeFilename);
+
+                if (fs.existsSync(filepath)) {
+                    console.log(`  ⏭️ Skip: Already downloaded ${safeFilename}`);
+                    continue;
+                }
+
                 const fileRes = await fetchWithBackoff(item.downloadUrl);
                 if (!fileRes.ok) {
                     console.log(`  ❌ Failed to download: HTTP ${fileRes.status}`);
@@ -185,9 +193,6 @@ async function scrapeSam() {
                 const detection = detectSectionLM(text);
                 if (detection.match) {
                     console.log(`  🔍 MATCH [${detection.confidence}%] ${detection.patterns.join(' + ')}`);
-
-                    const safeFilename = item.filename ? item.filename.replace(/[^a-z0-9.-]/gi, '_') : `${opp.solicitationNumber}.pdf`;
-                    const filepath = path.join(OUTPUT_DIR, safeFilename);
 
                     fs.writeFileSync(filepath, buffer);
                     console.log(`  💾 Saved: ${filepath}`);

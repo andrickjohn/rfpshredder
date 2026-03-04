@@ -20,6 +20,10 @@ interface ProcessingContextType {
   setEtaTime: (time: number | null) => void;
   isStuck: boolean;
   setIsStuck: (stuck: boolean) => void;
+  runningCost: number;
+  setRunningCost: (cost: number) => void;
+  modelName: string;
+  setModelName: (name: string) => void;
   reset: () => void;
 }
 
@@ -32,6 +36,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
   const [elapsedTime, setElapsedTime] = useState(0);
   const [etaTime, setEtaTime] = useState<number | null>(null);
   const [isStuck, setIsStuck] = useState(false);
+  const [runningCost, setRunningCost] = useState(0);
+  const [modelName, setModelName] = useState('');
 
   const setStepMessage = (step: number, message: string) => {
     setStepMessages(prev => ({ ...prev, [step]: message }));
@@ -44,6 +50,8 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
     setElapsedTime(0);
     setEtaTime(null);
     setIsStuck(false);
+    setRunningCost(0);
+    setModelName('');
   };
 
   return (
@@ -60,6 +68,10 @@ export function ProcessingProvider({ children }: { children: ReactNode }) {
       setEtaTime,
       isStuck,
       setIsStuck,
+      runningCost,
+      setRunningCost,
+      modelName,
+      setModelName,
       reset
     }}>
       {children}

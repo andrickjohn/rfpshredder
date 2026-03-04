@@ -3,7 +3,8 @@
 // Dependencies: @anthropic-ai/sdk, ./types, ./extraction-prompt, ./obligation-classifier, ./deduplicator
 // Test spec: qa/test-specs/core-product.md
 
-import Anthropic from '@anthropic-ai/sdk';
+import { generateText } from 'ai';
+import { getLLMProvider, calculateCost } from '../llm/providers';
 import type { TextChunk, Requirement, ObligationLevel, DetectedSection } from './types';
 import {
   EXTRACTION_SYSTEM_PROMPT,
@@ -34,46 +35,48 @@ export async function extractRequirements(
   chunks: TextChunk[],
   sectionL: DetectedSection | null,
   sectionM: DetectedSection | null,
-  onProgress?: (currentChunk: number, totalChunks: number) => void
-): Promise<Requirement[]> {
-  const client = new Anthropic({
-    apiKey: process.env.ANTHROPIC_API_KEY,
-  });
-
-  const model = process.env.ANTHROPIC_MODEL || 'claude-sonnet-4-20250514';
-
+  onProgress?: (currentChunk: number, totalChunks: number, accumulatedCost: number) => void,
+  modelName: string = 'claude-3-5-haiku-20241022'
+): Promise<{ requirements: Requirement[]; totalCost: number }> {
   // Process all chunks (could parallelize, but sequential is safer for rate limits)
   const allRaw: RawExtractedRequirement[] = [];
+  let totalCost = 0;
 
   for (let index = 0; index < chunks.length; index++) {
     const chunk = chunks[index];
     const sectionType = determineSectionType(chunk, sectionL, sectionM);
+
+    // Cost Saver: Only send chunks that are actually in Section L or M
+    if (sectionType === 'none') {
+      if (onProgress) onProgress(index + 1, chunks.length, totalCost);
+      continue;
+    }
+
     const userPrompt = buildExtractionPrompt(chunk.text, sectionType);
 
     try {
-      const response = await client.messages.create({
-        model,
-        max_tokens: 8192,
+      const { text, usage } = await generateText({
+        model: getLLMProvider(modelName),
         system: EXTRACTION_SYSTEM_PROMPT,
-        messages: [{ role: 'user', content: userPrompt }],
+        prompt: userPrompt,
       });
 
-      // Extract text content from response
-      const textContent = response.content.find((c) => c.type === 'text');
-      if (!textContent || textContent.type !== 'text') continue;
+      if (usage && usage.inputTokens !== undefined && usage.outputTokens !== undefined) {
+        totalCost += calculateCost(modelName, usage.inputTokens, usage.outputTokens);
+      }
 
-      const parsed = parseExtractionResponse(textContent.text);
+      const parsed = parseExtractionResponse(text);
       allRaw.push(...parsed);
 
       if (onProgress) {
-        onProgress(index + 1, chunks.length);
+        onProgress(index + 1, chunks.length, totalCost);
       }
     } catch (error) {
       // Log error but continue with other chunks — partial extraction
       // is better than no extraction
       const message = error instanceof Error ? error.message : 'Unknown error';
       throw new ExtractionError(
-        `Claude API extraction failed for chunk ${chunk.index}: ${message}`,
+        `LLM API extraction failed for chunk ${chunk.index}: ${message}`,
         'EXTRACTION_API_FAILED'
       );
     }
@@ -85,7 +88,10 @@ export async function extractRequirements(
   );
 
   // Deduplicate across chunk boundaries
-  return deduplicateRequirements(requirements);
+  return {
+    requirements: deduplicateRequirements(requirements),
+    totalCost,
+  };
 }
 
 /**
@@ -96,7 +102,7 @@ function determineSectionType(
   chunk: TextChunk,
   sectionL: DetectedSection | null,
   sectionM: DetectedSection | null
-): 'L' | 'M' | 'both' {
+): 'L' | 'M' | 'both' | 'none' {
   const inL = sectionL &&
     chunk.startPage <= sectionL.endPage &&
     chunk.endPage >= sectionL.startPage;
@@ -105,8 +111,9 @@ function determineSectionType(
     chunk.endPage >= sectionM.startPage;
 
   if (inL && inM) return 'both';
+  if (inL) return 'L';
   if (inM) return 'M';
-  return 'L';
+  return 'none';
 }
 
 /**

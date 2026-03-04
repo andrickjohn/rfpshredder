@@ -19,7 +19,7 @@ export default async function DashboardPage() {
 
   const { data: profile } = await supabase
     .from('profiles')
-    .select('subscription_status, subscription_tier, trial_shreds_used, full_name')
+    .select('subscription_status, subscription_tier, trial_shreds_used, full_name, email')
     .eq('id', user!.id)
     .single();
 
@@ -37,34 +37,35 @@ export default async function DashboardPage() {
   const userCanShred = profile ? canShred(profile) : false;
   const isTrialExhausted = profile?.subscription_status === 'trial'
     && (profile?.trial_shreds_used ?? 0) >= 1;
+  const isSuperAdmin = profile?.email === 'admin@automatemomentum.com';
 
   return (
     <DashboardClientWrapper>
       <div className="space-y-6">
-      <WelcomeHeader
-        fullName={profile?.full_name ?? null}
-        status={profile?.subscription_status ?? 'trial'}
-        tier={profile?.subscription_tier ?? 'free'}
-        trialShredsUsed={profile?.trial_shreds_used ?? 0}
-      />
+        <WelcomeHeader
+          fullName={profile?.full_name ?? null}
+          status={profile?.subscription_status ?? 'trial'}
+          tier={profile?.subscription_tier ?? 'free'}
+          trialShredsUsed={profile?.trial_shreds_used ?? 0}
+        />
 
-      <StatsCards
-        totalShreds={totalShreds}
-        totalRequirements={totalRequirements}
-        timeSavedHours={timeSavedHours}
-      />
+        <StatsCards
+          totalShreds={totalShreds}
+          totalRequirements={totalRequirements}
+          timeSavedHours={timeSavedHours}
+        />
 
-      <TrustBanner />
+        <TrustBanner />
 
-      <div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-3">Shred an RFP</h3>
-        <UploadForm canShred={userCanShred} isTrialExhausted={isTrialExhausted} />
-      </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">Shred an RFP</h3>
+          <UploadForm canShred={userCanShred} isTrialExhausted={isTrialExhausted} isSuperAdmin={isSuperAdmin} />
+        </div>
 
-      <div>
-        <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Activity</h3>
-        <ShredHistory />
-      </div>
+        <div>
+          <h3 className="text-lg font-semibold text-gray-900 mb-3">Recent Activity</h3>
+          <ShredHistory />
+        </div>
 
         {/* Processing pipeline at bottom - shows live progress during upload */}
         <ProcessingFlow />

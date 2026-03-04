@@ -11,6 +11,7 @@ import { useProcessing } from '@/contexts/processing-context';
 interface UploadFormProps {
   canShred: boolean;
   isTrialExhausted: boolean;
+  isSuperAdmin?: boolean;
 }
 
 const MAX_FILE_SIZE = 50 * 1024 * 1024;
@@ -30,7 +31,7 @@ export function validateUploadFile(file: { name: string; size: number }): string
   return null;
 }
 
-export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
+export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }: UploadFormProps) {
   const {
     setCurrentStep,
     setProgressPercentage,
@@ -42,6 +43,10 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
     setEtaTime,
     isStuck,
     setIsStuck,
+    runningCost,
+    setRunningCost,
+    modelName,
+    setModelName,
     reset
   } = useProcessing();
 
@@ -160,6 +165,7 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
 
       const decoder = new TextDecoder();
       let buffer = '';
+      let isComplete = false;
 
       while (true) {
         const { done, value } = await reader.read();
@@ -192,7 +198,10 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
                 } else if (typeof event.percentage === 'number') {
                   setProgressPercentage(event.percentage);
                 }
+                if (event.runningCost !== undefined) setRunningCost(event.runningCost);
+                if (event.modelName !== undefined) setModelName(event.modelName);
               } else if (event.type === 'complete') {
+                isComplete = true;
                 // Step 7: Download
                 setCurrentStep(7);
                 setProgressPercentage(100);
@@ -230,10 +239,56 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
               console.warn('Failed to parse NDJSON line:', line, e);
             }
           }
-        }
+          if (done) {
+            // Process any trailing data in the buffer
+            if (buffer.trim()) {
+              try {
+                const event = JSON.parse(buffer);
+                if (event.type === 'progress') {
+                  if (event.runningCost !== undefined) setRunningCost(event.runningCost);
+                  if (event.modelName !== undefined) setModelName(event.modelName);
+                } else if (event.type === 'complete') {
+                  isComplete = true;
+                  setCurrentStep(7);
+                  setProgressPercentage(100);
+                  setProgress('Downloading compliance matrix...');
+                  setStepMessage(7, 'Compliance matrix ready');
 
-        if (done) break;
-      }
+                  const byteCharacters = atob(event.excelBase64);
+                  const byteNumbers = new Array(byteCharacters.length);
+                  for (let i = 0; i < byteCharacters.length; i++) {
+                    byteNumbers[i] = byteCharacters.charCodeAt(i);
+                  }
+                  const byteArray = new Uint8Array(byteNumbers);
+                  const blob = new Blob([byteArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+                  const url = URL.createObjectURL(blob);
+                  setExcelUrl(url);
+
+                  const a = document.createElement('a');
+                  a.href = url;
+                  a.download = 'compliance-matrix.xlsx';
+                  document.body.appendChild(a);
+                  a.click();
+                  document.body.removeChild(a);
+
+                  setCurrentStep(8);
+                  setStatus('success');
+                  setProgress('');
+                  setCancelController(null);
+                }
+              } catch (e) {
+                console.warn('Failed to parse trailing buffer:', e);
+              }
+            }
+
+            if (!isComplete && !cancelController?.signal.aborted) {
+              throw new Error('Connection closed by server prematurely.');
+            }
+            break;
+          }
+        } // closes if (value)
+      } // closes while (true)
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
         console.log('Upload canceled by user');
@@ -361,6 +416,8 @@ export function UploadForm({ canShred, isTrialExhausted }: UploadFormProps) {
                 </svg>
                 Elapsed: {formatTime(elapsedTime)}
                 {etaTime !== null && ` | ETA: ~${formatTime(etaTime)}`}
+                {isSuperAdmin && modelName && ` | Model: ${modelName}`}
+                {isSuperAdmin && runningCost > 0 && ` | Cost: $${runningCost.toFixed(3)}`}
               </span>
             </div>
           </div>
