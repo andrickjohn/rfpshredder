@@ -22,7 +22,7 @@ export default async function SettingsPage() {
     .eq('id', user.id)
     .single();
 
-  const isSuperAdmin = profile?.email === 'admin@automatemomentum.com';
+  const isSuperAdmin = user?.email === 'admin@automatemomentum.com';
 
   return (
     <div className="space-y-6">

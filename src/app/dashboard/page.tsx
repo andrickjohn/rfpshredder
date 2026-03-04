@@ -37,7 +37,7 @@ export default async function DashboardPage() {
   const userCanShred = profile ? canShred(profile) : false;
   const isTrialExhausted = profile?.subscription_status === 'trial'
     && (profile?.trial_shreds_used ?? 0) >= 1;
-  const isSuperAdmin = profile?.email === 'admin@automatemomentum.com';
+  const isSuperAdmin = user?.email === 'admin@automatemomentum.com';
 
   return (
     <DashboardClientWrapper>

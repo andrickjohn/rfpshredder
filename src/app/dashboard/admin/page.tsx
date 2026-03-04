@@ -3,6 +3,8 @@ import { createClient } from '@/lib/supabase/server';
 import { redirect } from 'next/navigation';
 import { SamScraperClient } from './sam-scraper-client';
 
+import { AdminLLMSettings } from '@/components/dashboard/settings/admin-llm-settings';
+
 export const metadata = {
     title: 'Admin Dashboard - RFP Shredder',
 };
@@ -15,6 +17,12 @@ export default async function AdminDashboard() {
         redirect('/dashboard');
     }
 
+    const { data: profile } = await supabase
+        .from('profiles')
+        .select('preferred_llm_model')
+        .eq('id', user.id)
+        .single();
+
     return (
         <div className="space-y-8">
             <div>
@@ -23,6 +31,8 @@ export default async function AdminDashboard() {
                     Super user tools.
                 </p>
             </div>
+
+            <AdminLLMSettings currentModel={profile?.preferred_llm_model || 'claude-3-5-haiku-20241022'} />
 
             <div className="bg-white rounded-xl border border-gray-200 shadow-sm overflow-hidden">
                 <div className="px-6 py-5 border-b border-gray-200">

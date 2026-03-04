@@ -455,6 +455,15 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
             Click the button below to download the generated Excel matrix.
           </p>
 
+          {isSuperAdmin && runningCost > 0 && (
+            <div className="mb-6 text-sm font-medium text-green-800 bg-green-100/50 py-3 px-6 rounded-xl inline-block text-left border border-green-200">
+              <div className="flex flex-col gap-1">
+                <span><strong>Model Used:</strong> {modelName}</span>
+                <span><strong>Total Cost:</strong> ${runningCost.toFixed(3)}</span>
+              </div>
+            </div>
+          )}
+
           <div className="flex flex-col sm:flex-row items-center justify-center gap-4">
             {excelUrl && (
               <a
