@@ -77,3 +77,14 @@
 - **Fix applied**: (1) `catch {}` instead of `catch (error) {}`, (2) `new Uint8Array(buffer)` for NextResponse body, (3) `PromiseLike` instead of `Promise` in interface, (4) `.forEach()` instead of `for...of` on Map/Set
 - **Prevention rule**: Always run `npx next build` locally before deploying to Vercel. It catches ESLint and type errors that dev mode ignores.
 - **Applies to**: All Vercel deployments, all Next.js projects
+
+---
+
+## Lesson 8: Vercel AI SDK usage parameters types
+- **Date**: 2026-03-04
+- **Component**: LLM extraction / API SDK 
+- **What happened**: When extracting tokens used from the return value of `generateText` in the Vercel AI SDK, attempting to read `usage.promptTokens` and `usage.completionTokens` threw a TS compiler error in `extractRequirements`. 
+- **Root cause**: The Vercel AI SDK (version 3.3.x / 4.x) actually structures usage information inside `usage.inputTokens` and `usage.outputTokens` within its return response, mapping to different fields than raw OpenAI or Anthropic payload structures.
+- **Fix applied**: Checked `usage.inputTokens` and `usage.outputTokens` for `undefined` before performing operations and extracting cost metrics.
+- **Prevention rule**: Always double check typing signatures in newer versions of the `ai` npm package, specifically `LanguageModelUsage`, instead of relying on standard raw provider (e.g., Anthropic, OpenAI) parameter names when wrapping LLM interactions.
+- **Applies to**: Vercel `ai` SDK usage anywhere in the codebase.
