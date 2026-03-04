@@ -1,0 +1,112 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2868
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fnil\fcharset0 .SFNS-Semibold;\f1\fnil\fcharset0 .SFNS-Regular;\f2\froman\fcharset0 TimesNewRomanPSMT;
+\f3\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;\red14\green14\blue14;}
+{\*\expandedcolortbl;;\cssrgb\c6700\c6700\c6700;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f0\b\fs44 \cf2  PROMPT 1 \'97 Extraction Reliability Upgrade
+\f1\b0\fs28 \cf2 Modify the requirement extraction pipeline with the following changes:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	Set Claude API temperature to 0 for deterministic extraction.\
+	2.	Implement retry logic:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	If Claude API call fails (network, 429, 5xx), retry up to 2 times.\
+	\'95	Use exponential backoff (e.g., 1 second, then 2 seconds).\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	3.	If a chunk ultimately fails after retries:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Continue processing remaining chunks.\
+	\'95	Return partial results.\
+	\'95	Add a warning flag in the API response indicating which chunk failed.\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	4.	Increase chunk overlap from ~200 characters to 800 characters.\
+	5.	Ensure overlap attempts to break at paragraph boundaries before raw slicing.\
+\
+Do not refactor unrelated modules. Keep changes minimal and localized to extractor and chunker.\
+\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f0\b\fs44 \cf2 PROMPT 2 \'97 Extraction Density Sanity Check
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Add a requirement density validation step after extraction but before Excel generation:\
+\
+Logic:\
+\pard\tqr\tx400\tx560\li300\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Count total pages in Section L and Section M.\
+	\'95	Calculate total extracted requirements for each section.\
+	\'95	If:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Section L pages >= 10 AND extracted L requirements < (Section L pages \'d7 0.8)\
+	\'95	OR Section M pages >= 5 AND extracted M requirements < (Section M pages \'d7 0.5)\
+\pard\tqr\tx400\tx560\li300\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Then:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Add a warning field to the API response: \'93LOW_EXTRACTION_DENSITY\'94\
+	\'95	Add a note in the Excel footer: \'93Low extraction density detected \'97 manual verification recommended.\'94\
+\
+Do not block processing. This is advisory only.\
+\
+Keep implementation simple and deterministic.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f3\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+
+\f0\b\fs44 \uc0\u55357 \u56615  PROMPT 3 \'97 Cross-Reference Minimum Confidence Threshold
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Modify the cross-reference engine to support a \'93no clear match\'94 state.\
+\
+Add:\
+\pard\tqr\tx400\tx560\li300\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Minimum total score threshold (e.g., 1.5).\
+	\'95	If highest score for an L requirement is below threshold:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Do NOT map it to any M factor.\
+	\'95	Set evalFactorMapping to \'93NO CLEAR MATCH\'94.\
+	\'95	Do not include it in the Cross Reference sheet.\
+\
+Ensure confidence labels:\
+\pard\tqr\tx400\tx560\li300\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	high (explicit reference)\
+	\'95	medium (strong alignment)\
+	\'95	low (weak keyword only)\
+\
+But do not assign any mapping if below threshold.\
+\
+Keep scoring algorithm otherwise unchanged.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f3\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+
+\f0\b\fs44 \uc0\u55357 \u56615  PROMPT 4 \'97 TOC False Positive Guard
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Improve Section L and M detection to avoid matching table-of-contents entries.\
+\
+Add logic:\
+\pard\tqr\tx400\tx560\li300\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	If a detected Section L or M match occurs within first 5 pages,\
+	\'95	And the page contains phrases like \'93Table of Contents\'94 or \'93Contents\'94,\
+	\'95	Then ignore that match and continue searching for the next valid match.\
+\
+Do not rewrite the entire regex system.\
+Add a guard condition only.\
+\
+Maintain existing fallback behavior.\
+\
+}

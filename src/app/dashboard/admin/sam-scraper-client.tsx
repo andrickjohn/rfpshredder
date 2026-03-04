@@ -27,7 +27,7 @@ export function SamScraperClient() {
     const [directResults, setDirectResults] = useState<FoundPdf[]>([]);
 
     // Filters
-    const [naics, setNaics] = useState('541511, 541512, 541519, 511210, 236220');
+    const [naics, setNaics] = useState('541511, 541512, 541519, 541611, 541330');
     const [keywords, setKeywords] = useState('section l, section m, schedule l, schedule m, instructions to offerors, evaluation criteria, evaluation factors');
     const [lookbackDays, setLookbackDays] = useState('180');
 
@@ -46,13 +46,13 @@ export function SamScraperClient() {
 
     const shuffleNaics = () => {
         const pool = [
-            '541511', '541512', '541519', '511210', '236220', // IT/Construction
+            '541511', '541512', '541519', // IT Services
             '541330', // Engineering
             '541611', '541618', // Consulting/Management
-            '561210', // Facilities
-            '541990', // Tech SVCS
+            '541690', // Scientific/Tech Consulting
+            '541990', // Other Tech Services
             '518210', // Data Processing
-            '541690'  // Scientific/Tech Consulting
+            '561210'  // Facilities
         ];
         // Pick 5 random unique
         const shuffled = pool.sort(() => 0.5 - Math.random()).slice(0, 5);
@@ -260,7 +260,7 @@ export function SamScraperClient() {
                             {apiLoading ? 'Scraping...' : 'Start API Profile'}
                         </button>
                         <div className="text-sm text-gray-500">
-                            <strong>Standard API</strong> (Extreme Rate Limits)
+                            <strong>SAM.gov API v2</strong> — Scored attachments · Structured L+M detection · Smart retry
                         </div>
                     </div>
 
@@ -298,7 +298,7 @@ export function SamScraperClient() {
                             {uiLoading ? 'Scraping...' : 'Start UI Bypass'}
                         </button>
                         <div className="text-sm text-gray-500">
-                            <strong>Browser Engine</strong> (Bypasses API limits)
+                            <strong>Browser Engine v2</strong> — Bypasses API limits · Scored downloads · L+M proximity
                         </div>
                     </div>
 
@@ -329,8 +329,8 @@ export function SamScraperClient() {
             {/* --- DIRECT LOOKUP (Strategy 3 + 4) --- */}
             <div className="bg-white p-4 rounded-lg border border-gray-200 shadow-sm space-y-3">
                 <div className="flex items-center justify-between">
-                    <h3 className="font-semibold text-gray-900">🎯 Direct Lookup</h3>
-                    <span className="text-xs text-gray-400">Paste a SAM.gov URL or solicitation number</span>
+                    <h3 className="font-semibold text-gray-900">🎯 Direct Lookup v2</h3>
+                    <span className="text-xs text-gray-400">Scored attachments · Structured L+M · Paste URL or solicitation #</span>
                 </div>
                 <div className="flex gap-2">
                     <input

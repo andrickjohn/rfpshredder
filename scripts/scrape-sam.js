@@ -3,12 +3,12 @@ const path = require('path');
 const pdfParse = require('pdf-parse');
 
 const API_KEY = process.env.SAM_GOV_API_KEY || 'SAM-0fbe5a1c-7d31-4f8e-896d-3d9a1dbd8800';
-const NAICS_CODES = ['541511', '541512', '541519', '511210', '236220', '237', '238'];
+const NAICS_CODES = ['541511', '541512', '541519', '541611', '541330'];
 
 const today = new Date();
 const postedTo = `${(today.getMonth() + 1).toString().padStart(2, '0')}/${today.getDate().toString().padStart(2, '0')}/${today.getFullYear()}`;
 const past = new Date(today);
-past.setDate(past.getDate() - 30);
+past.setDate(past.getDate() - 180);
 const postedFrom = `${(past.getMonth() + 1).toString().padStart(2, '0')}/${past.getDate().toString().padStart(2, '0')}/${past.getFullYear()}`;
 
 const OUTPUT_DIR = path.join(__dirname, '..', 'sam_samples');
@@ -29,6 +29,52 @@ async function fetchWithBackoff(url, options = {}, retries = 3, backoff = 3000) 
         return res;
     }
     throw new Error('Too Many Requests limit exceeded');
+}
+
+function scoreAttachment(name, solicitationNumber) {
+    const lower = (name || '').toLowerCase();
+    let score = 0;
+    if (solicitationNumber && lower.includes(solicitationNumber.toLowerCase())) score += 3;
+    if (lower.includes('rfp')) score += 2;
+    if (lower.includes('solicitation')) score += 2;
+    if (lower.includes('final') || lower.includes('conformed')) score += 1;
+    if (lower.includes('attachment')) score -= 2;
+    if (lower.includes('amendment')) score -= 3;
+    if (lower.includes('pricing')) score -= 2;
+    if (lower.includes('q&a') || lower.includes('q & a') || lower.includes('questions and answers')) score -= 2;
+    if (lower.includes('template')) score -= 2;
+    return score;
+}
+
+function detectSectionLM(text) {
+    if (text.length < 100) return { match: false, confidence: 0, patterns: [] };
+    const norm = text.replace(/\s+/g, ' ');
+    const lSignals = [
+        ['section l', 'Section L'], ['part l', 'Part L'], ['l. instructions', 'L. Instructions'],
+        ['instructions to offerors', 'Instructions to Offerors'], ['instructions to quoters', 'Instructions to Quoters'],
+        ['proposal preparation instructions', 'Proposal Prep Instructions'], ['proposal instructions', 'Proposal Instructions'],
+    ];
+    const mSignals = [
+        ['section m', 'Section M'], ['part m', 'Part M'], ['m. evaluation', 'M. Evaluation'],
+        ['evaluation criteria', 'Evaluation Criteria'], ['evaluation factors', 'Evaluation Factors'],
+        ['evaluation factors for award', 'Eval Factors for Award'], ['basis for award', 'Basis for Award'],
+    ];
+    const matchedL = [], matchedM = [];
+    for (const [pat, label] of lSignals) { if (norm.includes(pat)) matchedL.push(label); }
+    for (const [pat, label] of mSignals) { if (norm.includes(pat)) matchedM.push(label); }
+    const match = matchedL.length > 0 && matchedM.length > 0;
+    let confidence = 0;
+    if (match) {
+        confidence = 85;
+        if (matchedL.length >= 2) confidence += 5;
+        if (matchedM.length >= 2) confidence += 5;
+        if (norm.includes('instructions to offerors') && norm.includes('evaluation factors for award')) confidence = Math.max(confidence, 95);
+        confidence = Math.min(confidence, 100);
+    }
+    const patterns = [];
+    if (matchedL.length > 0) patterns.push(`L: ${matchedL.join(', ')}`);
+    if (matchedM.length > 0) patterns.push(`M: ${matchedM.join(', ')}`);
+    return { match, confidence, patterns };
 }
 
 async function scrapeSam() {
@@ -63,18 +109,19 @@ async function scrapeSam() {
 
     console.log(`Found ${opps.length} total opportunities.`);
 
-    // Filter for "small business"
-    const smallBizOpps = opps.filter(o => {
-        const desc = o.typeOfSetAsideDescription ? String(o.typeOfSetAsideDescription).toLowerCase() : '';
-        const setAside = o.typeOfSetAside ? String(o.typeOfSetAside).toLowerCase() : '';
-        return desc.includes('small business') || setAside.includes('sba') || setAside.includes('sdb') || setAside.includes('sbe');
+    // Filter: skip awards < $5M (keep all notice types)
+    const MIN_AWARD = 5_000_000;
+    const filteredOpps = opps.filter(o => {
+        const award = Number(o.award?.amount || o.estimatedTotalValue || o.awardAmount || 0);
+        if (award > 0 && award < MIN_AWARD) return false;
+        return true;
     });
 
-    console.log(`Filtered down to ${smallBizOpps.length} small business opportunities.`);
+    console.log(`Filtered to ${filteredOpps.length} opportunities (≥$${MIN_AWARD / 1_000_000}M).`);
 
     let successfulDownloads = 0;
 
-    for (const opp of smallBizOpps) {
+    for (const opp of filteredOpps) {
         if (successfulDownloads >= 3) {
             console.log('✅ Found 3 samples! Stopping.');
             break;
@@ -86,22 +133,37 @@ async function scrapeSam() {
 
         console.log(`Checking Opportunity: ${opp.title} (${opp.solicitationNumber})`);
 
+        // Phase 1: HEAD all links, score filenames
+        const scored = [];
         for (const link of opp.resourceLinks) {
-            await delay(1500); // Respect SAM download limits
-
+            await delay(1500);
             try {
-                // Add API key if not present
                 const downloadUrl = link.includes('api_key=') ? link : `${link}?api_key=${API_KEY}`;
-
                 const headRes = await fetchWithBackoff(downloadUrl, { method: 'HEAD' });
                 const contentDisp = headRes.headers.get('content-disposition') || '';
+                const filename = contentDisp.split('filename="')[1]?.split('"')[0] || link.split('/').pop() || '';
+                const s = scoreAttachment(filename, opp.solicitationNumber);
+                scored.push({ link, downloadUrl, filename, contentDisp, score: s });
+            } catch { }
+        }
+        scored.sort((a, b) => b.score - a.score);
+        const topLinks = scored.length <= 6 ? scored : scored.slice(0, 6);
+        console.log(`  📊 Scored ${scored.length} links → downloading ${topLinks.length}${scored.length <= 6 ? ' (all)' : ' (top 6)'}`);
+        if (scored.length > 0) {
+            console.log(`  📊 ${scored.map(s => `${s.filename.substring(0, 40)}(${s.score})`).join(', ')}`);
+        }
 
-                // Exclude obvious non-PDFs if they have a clear extension in disposition
-                if (contentDisp && !contentDisp.toLowerCase().includes('.pdf') && contentDisp.includes('.')) {
-                    continue; // Skip non-pdf like .docx if we strictly want PDFs, although pdf-parse only does pdf
+        // Phase 2: Download only top-scored attachments
+        for (const item of topLinks) {
+            await delay(1500);
+
+            try {
+                // Skip obvious non-PDFs
+                if (item.contentDisp && !item.contentDisp.toLowerCase().includes('.pdf') && item.contentDisp.includes('.')) {
+                    continue;
                 }
 
-                const fileRes = await fetchWithBackoff(downloadUrl);
+                const fileRes = await fetchWithBackoff(item.downloadUrl);
                 if (!fileRes.ok) {
                     console.log(`  ❌ Failed to download: HTTP ${fileRes.status}`);
                     continue;
@@ -114,23 +176,25 @@ async function scrapeSam() {
                 try {
                     const parsed = await pdfParse(buffer);
                     text = parsed.text.toLowerCase();
-                    console.log(`  📄 Parsed PDF. Char count: ${text.length}`);
+                    console.log(`  📄 [score:${item.score}] ${item.filename} — ${text.length} chars`);
                 } catch (parseErr) {
                     console.log(`  ❌ Failed to parse as PDF: ${parseErr.message.substring(0, 50)}...`);
-                    continue; // Not a valid PDF
+                    continue;
                 }
 
-                if (text.includes('section l') || text.includes('section m') || text.includes('schedule l') || text.includes('schedule m')) {
-                    console.log(`  🔍 Found Section L/M requirements in attachment! Saving...`);
+                const detection = detectSectionLM(text);
+                if (detection.match) {
+                    console.log(`  🔍 MATCH [${detection.confidence}%] ${detection.patterns.join(' + ')}`);
 
-                    const filenameExt = contentDisp ? contentDisp.split('filename="')[1]?.split('"')[0] : 'document.pdf';
-                    const safeFilename = filenameExt ? filenameExt.replace(/[^a-z0-9.-]/gi, '_') : `${opp.solicitationNumber}.pdf`;
+                    const safeFilename = item.filename ? item.filename.replace(/[^a-z0-9.-]/gi, '_') : `${opp.solicitationNumber}.pdf`;
                     const filepath = path.join(OUTPUT_DIR, safeFilename);
 
                     fs.writeFileSync(filepath, buffer);
                     console.log(`  💾 Saved: ${filepath}`);
                     successfulDownloads++;
-                    break; // Move to next opportunity
+                    break;
+                } else {
+                    console.log(`  ❌ No L+M (confidence: ${detection.confidence}%)`);
                 }
             } catch (err) {
                 // console.log('  ⚠️ Failed to process attachment:', err.message);

@@ -65,7 +65,7 @@ const steps: Step[] = [
 ];
 
 export function ProcessingFlow() {
-  const { currentStep } = useProcessing();
+  const { currentStep, progressPercentage, stepMessages } = useProcessing();
   const [dismissed, setDismissed] = useState(false);
   const [loaded, setLoaded] = useState(false);
   const [expandedStep, setExpandedStep] = useState<number | null>(null);
@@ -86,11 +86,11 @@ export function ProcessingFlow() {
   const getStepColor = (status: StepStatus) => {
     switch (status) {
       case 'pending':
-        return 'bg-gray-200 text-gray-400 border-gray-200';
+        return 'bg-gray-50 text-gray-400';
       case 'active':
-        return 'bg-blue-500 text-white border-blue-500 animate-pulse';
+        return 'bg-white text-blue-600';
       case 'complete':
-        return 'bg-green-500 text-white border-green-500';
+        return 'bg-green-500 text-white';
     }
   };
 
@@ -174,27 +174,37 @@ export function ProcessingFlow() {
                   aria-expanded={isExpanded}
                 >
                   {/* Number circle */}
-                  <div
-                    className={`w-12 h-12 rounded-full flex items-center justify-center text-sm font-bold border-2 transition-all duration-300 ${getStepColor(
-                      status
-                    )} ${status === 'pending' ? 'group-hover:border-gray-400 group-hover:bg-gray-300' : ''}`}
-                  >
-                    {status === 'complete' ? (
-                      <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
-                        <path
-                          fillRule="evenodd"
-                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                          clipRule="evenodd"
-                        />
-                      </svg>
-                    ) : (
-                      step.id
-                    )}
+                  <div className={`relative w-12 h-12 rounded-full transition-all duration-300 ${status === 'pending' ? 'border-2 border-gray-200 group-hover:border-gray-400 group-hover:bg-gray-200' : ''} ${status === 'complete' ? 'border-2 border-green-500' : ''}`}
+                    style={status === 'active' ? {
+                      background: `conic-gradient(#3b82f6 ${progressPercentage}%, #e5e7eb 0)`,
+                      padding: '2px'
+                    } : {}}>
+                    <div
+                      className={`w-full h-full rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300 ${getStepColor(
+                        status
+                      )}`}
+                    >
+                      {status === 'complete' ? (
+                        <svg className="w-6 h-6" fill="currentColor" viewBox="0 0 20 20">
+                          <path
+                            fillRule="evenodd"
+                            d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                            clipRule="evenodd"
+                          />
+                        </svg>
+                      ) : (
+                        step.id
+                      )}
+                    </div>
                   </div>
 
                   {/* Step label */}
-                  <p className="text-xs font-bold text-gray-900 mt-2">{step.title}</p>
-                  <p className="text-[11px] text-gray-500 mt-0.5 leading-tight">{step.brief}</p>
+                  <div className="mt-2 text-center h-10 flex flex-col items-center">
+                    <p className="text-xs font-bold text-gray-900">{step.title}</p>
+                    <p className={`text-[11px] mt-0.5 leading-tight ${status !== 'pending' && stepMessages[step.id] ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+                      {status !== 'pending' && stepMessages[step.id] ? stepMessages[step.id] : step.brief}
+                    </p>
+                  </div>
 
                   {/* Click indicator */}
                   {!isExpanded && (
@@ -255,27 +265,35 @@ export function ProcessingFlow() {
                 aria-expanded={isExpanded}
               >
                 {/* Number circle */}
-                <div
-                  className={`w-10 h-10 rounded-full flex items-center justify-center text-sm font-bold border-2 flex-shrink-0 transition-all duration-300 ${getStepColor(
-                    status
-                  )}`}
-                >
-                  {status === 'complete' ? (
-                    <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
-                      <path
-                        fillRule="evenodd"
-                        d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
-                        clipRule="evenodd"
-                      />
-                    </svg>
-                  ) : (
-                    step.id
-                  )}
+                <div className={`relative w-10 h-10 rounded-full flex-shrink-0 transition-all duration-300 ${status === 'pending' ? 'border-2 border-gray-200' : ''} ${status === 'complete' ? 'border-2 border-green-500' : ''}`}
+                  style={status === 'active' ? {
+                    background: `conic-gradient(#3b82f6 ${progressPercentage}%, #e5e7eb 0)`,
+                    padding: '2px'
+                  } : {}}>
+                  <div
+                    className={`w-full h-full rounded-full flex items-center justify-center text-sm font-bold transition-all duration-300 ${getStepColor(
+                      status
+                    )}`}
+                  >
+                    {status === 'complete' ? (
+                      <svg className="w-5 h-5" fill="currentColor" viewBox="0 0 20 20">
+                        <path
+                          fillRule="evenodd"
+                          d="M16.707 5.293a1 1 0 010 1.414l-8 8a1 1 0 01-1.414 0l-4-4a1 1 0 011.414-1.414L8 12.586l7.293-7.293a1 1 0 011.414 0z"
+                          clipRule="evenodd"
+                        />
+                      </svg>
+                    ) : (
+                      step.id
+                    )}
+                  </div>
                 </div>
 
                 <div className="flex-1 pt-1">
                   <p className="text-sm font-bold text-gray-900">{step.title}</p>
-                  <p className="text-xs text-gray-500">{step.brief}</p>
+                  <p className={`text-xs mt-0.5 ${status !== 'pending' && stepMessages[step.id] ? 'text-blue-600 font-medium' : 'text-gray-500'}`}>
+                    {status !== 'pending' && stepMessages[step.id] ? stepMessages[step.id] : step.brief}
+                  </p>
                   {!isExpanded && <p className="text-xs text-blue-500 mt-1">Tap for details</p>}
                 </div>
               </button>

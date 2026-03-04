@@ -1,0 +1,247 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2868
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fswiss\fcharset0 Helvetica;\f1\fnil\fcharset0 .SFNS-Regular;\f2\froman\fcharset0 TimesNewRomanPSMT;
+\f3\fnil\fcharset0 .SFNS-Semibold;}
+{\colortbl;\red255\green255\blue255;\red14\green14\blue14;\red12\green12\blue12;}
+{\*\expandedcolortbl;;\cssrgb\c6700\c6700\c6700;\cssrgb\c5098\c5098\c5098;}
+\margl1440\margr1440\vieww19320\viewh18620\viewkind0
+\pard\tx720\tx1440\tx2160\tx2880\tx3600\tx4320\tx5040\tx5760\tx6480\tx7200\tx7920\tx8640\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 RFP Scrape Improvement\
+\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 You\'92re building a tool that:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	Scrapes RFP PDFs\
+	2.	Extracts Section L (Instructions)\
+	3.	Extracts Section M (Evaluation Factors)\
+	4.	Generates a structured compliance matrix\
+\
+That\'92s viable. But only if you stop thinking \'93scrape PDFs\'94 and start thinking \'93normalize acquisition chaos.\'94\
+\
+Because here\'92s the truth:\
+\
+Section L and M are not consistently formatted.\
+They are not consistently labeled.\
+They are not always in UCF format.\
+They are sometimes merged.\
+They are sometimes embedded in task order language.\
+They are sometimes amendment-modified.\
+\
+If you build this naively, it breaks immediately.\
+\
+So here\'92s how to do it properly.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 Step 1: Define the True Target Market
+\f1\b0\fs28 \
+\
+Your real ICP is:\
+\pard\tqr\tx100\tx260\li260\fi-260\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Small to mid-size federal contractors ($10M\'96$250M revenue)\
+	\'95	Proposal teams under-resourced\
+	\'95	Responding to FAR Part 15 RFPs\
+	\'95	High-volume service shops (IT, engineering, consulting)\
+\
+They live in:\
+	\'95	541511 / 541512 / 541519\
+	\'95	541611 / 541618\
+	\'95	541330\
+	\'95	541715\
+\
+Agencies most valuable to target:\
+	\'95	{\field{\*\fldinst{HYPERLINK "chatgpt://generic-entity?number=0"}}{\fldrslt \cf3 \uld \ulc3 Department of Defense}}\
+	\'95	{\field{\*\fldinst{HYPERLINK "chatgpt://generic-entity?number=1"}}{\fldrslt \cf3 \uld \ulc3 Department of Veterans Affairs}}\
+	\'95	{\field{\*\fldinst{HYPERLINK "chatgpt://generic-entity?number=2"}}{\fldrslt \cf3 \uld \ulc3 Department of Homeland Security}}\
+	\'95	{\field{\*\fldinst{HYPERLINK "chatgpt://generic-entity?number=3"}}{\fldrslt \cf3 \uld \ulc3 National Aeronautics and Space Administration}}\
+\
+These issue structured RFPs with L & M.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 Step 2: Stop Thinking \'93Scrape.\'94 Think \'93Pipeline.\'94
+\f1\b0\fs28 \
+\
+Your system architecture should look like this:\
+\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs30 \cf2 1\uc0\u65039 \u8419  Opportunity Filter Layer
+\f1\b0\fs28 \
+\pard\tqr\tx100\tx260\li260\fi-260\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Pull SAM metadata via API\
+	\'95	Filter:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Notice Type = Solicitation\
+	\'95	Keyword contains \'93RFP\'94\
+	\'95	NAICS in high-probability list\
+	\'95	Active\
+	\'95	Dollar value > $10M (if available)\
+\
+Then:\
+\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs30 \cf2 2\uc0\u65039 \u8419  Document Intake Layer
+\f1\b0\fs28 \
+\pard\tqr\tx100\tx260\li260\fi-260\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Download all PDFs\
+	\'95	OCR fallback if scanned\
+	\'95	Convert to structured text\
+	\'95	Remove headers/footers\
+	\'95	Normalize whitespace\
+\
+Now the real work begins.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 Step 3: Detect Whether L & M Exist
+\f1\b0\fs28 \
+\
+Do NOT rely on \'93Section L\'94 literal match only.\
+\
+Use a multi-signal detection approach:\
+\
+Search for:\
+\pard\tqr\tx100\tx260\li260\fi-260\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	\'93SECTION L \'96\'94\
+	\'95	\'93Instructions to Offerors\'94\
+	\'95	\'93Instructions to Offerors or Quoters\'94\
+	\'95	\'93Proposal Preparation Instructions\'94\
+	\'95	\'93Evaluation Factors for Award\'94\
+	\'95	\'93Basis for Award\'94\
+	\'95	\'93Source Selection Criteria\'94\
+\
+Score confidence.\
+\
+If L & M confidence < threshold \uc0\u8594  discard or flag.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 Step 4: Extract Structured Elements
+\f1\b0\fs28 \
+\
+From Section L extract:\
+\pard\tqr\tx100\tx260\li260\fi-260\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Volume structure (Volume I, II, III)\
+	\'95	Page limits\
+	\'95	Font requirements\
+	\'95	Submission instructions\
+	\'95	Required sections\
+	\'95	Required certifications\
+	\'95	Past performance instructions\
+	\'95	Pricing instructions\
+\
+From Section M extract:\
+	\'95	Evaluation factors\
+	\'95	Subfactors\
+	\'95	Relative importance\
+	\'95	Tradeoff language\
+	\'95	Pass/fail vs weighted\
+	\'95	Rating definitions (Outstanding, Good, etc.)\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 Step 5: Generate the Compliance Matrix
+\f1\b0\fs28 \
+\
+You don\'92t just list requirements.\
+\
+You create rows like this:\
+\
+| Requirement ID | Source | Exact Text | Proposal Volume | Page Limit | Evaluation Link | Risk Level |\
+\
+And here\'92s the key insight:\
+\
+Each instruction in L should be cross-linked to how it is evaluated in M.\
+\
+Most tools don\'92t do this.\
+\
+That\'92s your edge.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 Hard Technical Problem You Must Solve
+\f1\b0\fs28 \
+\
+PDFs are messy.\
+\
+You must handle:\
+\pard\tqr\tx100\tx260\li260\fi-260\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Multi-column formatting\
+	\'95	Amendment overlays\
+	\'95	Tables embedded in text\
+	\'95	Numbered lists that break across pages\
+	\'95	\'93See Attachment X\'94 references\
+	\'95	Repeated section headers in amendments\
+\
+If you don\'92t build robust text normalization, your extraction will hallucinate structure.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f0\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f3\b\fs44 \cf2 The Real Differentiator
+\f1\b0\fs28 \
+\
+Most compliance tools stop at extraction.\
+\
+You go further:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	Auto-tag each requirement as:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Administrative\
+	\'95	Technical\
+	\'95	Past Performance\
+	\'95	Pricing\
+	\'95	Submission Format\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	2.	Auto-assign to proposal team roles.\
+	3.	Highlight \'93evaluation-critical\'94 items based on Section M weighting.\
+\
+Now you\'92re not just a scraper.\
+You\'92re a proposal accelerator.\
+}

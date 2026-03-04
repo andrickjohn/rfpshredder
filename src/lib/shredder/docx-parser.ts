@@ -4,7 +4,7 @@
 // Test spec: qa/test-specs/core-product.md
 
 import mammoth from 'mammoth';
-import { ParseResult, ParsedPage, MAX_PAGE_COUNT } from './types';
+import { ParseResult, ParsedPage } from './types';
 
 /**
  * Parse a DOCX buffer into structured text.
@@ -34,13 +34,7 @@ export async function parseDOCX(buffer: Buffer): Promise<ParseResult> {
   // DOCX doesn't provide real page numbers, so we use structural markers.
   const pages = splitDocxIntoSections(rawText);
 
-  if (pages.length > MAX_PAGE_COUNT) {
-    throw new DocxParseError(
-      `The document exceeds the ${MAX_PAGE_COUNT}-section limit (${pages.length} sections). Please split the document.`,
-      'PAGE_LIMIT_EXCEEDED'
-    );
-  }
-
+  // We removed the throw here. Limit enforcement is strictly in api/shred/route.ts
   // Build full text with section markers
   const fullText = pages
     .map((p) => `[SECTION ${p.pageNumber}]\n${p.text}`)

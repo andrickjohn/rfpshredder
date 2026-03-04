@@ -33,7 +33,8 @@ const VALID_OBLIGATIONS: Set<string> = new Set([
 export async function extractRequirements(
   chunks: TextChunk[],
   sectionL: DetectedSection | null,
-  sectionM: DetectedSection | null
+  sectionM: DetectedSection | null,
+  onProgress?: (currentChunk: number, totalChunks: number) => void
 ): Promise<Requirement[]> {
   const client = new Anthropic({
     apiKey: process.env.ANTHROPIC_API_KEY,
@@ -44,7 +45,8 @@ export async function extractRequirements(
   // Process all chunks (could parallelize, but sequential is safer for rate limits)
   const allRaw: RawExtractedRequirement[] = [];
 
-  for (const chunk of chunks) {
+  for (let index = 0; index < chunks.length; index++) {
+    const chunk = chunks[index];
     const sectionType = determineSectionType(chunk, sectionL, sectionM);
     const userPrompt = buildExtractionPrompt(chunk.text, sectionType);
 
@@ -62,6 +64,10 @@ export async function extractRequirements(
 
       const parsed = parseExtractionResponse(textContent.text);
       allRaw.push(...parsed);
+
+      if (onProgress) {
+        onProgress(index + 1, chunks.length);
+      }
     } catch (error) {
       // Log error but continue with other chunks — partial extraction
       // is better than no extraction

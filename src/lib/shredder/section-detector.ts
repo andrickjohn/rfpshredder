@@ -21,6 +21,8 @@ const SECTION_L_PATTERNS = [
   /(?:^|\n)\s*L[\s.:\-–—]+(?:Instructions|INSTRUCTIONS)\s/im,
   // Volume L pattern
   /(?:^|\n)\s*(?:VOLUME|Volume)\s+(?:III|IV|3|4)[\s.:\-–—]+.*(?:Instructions|INSTRUCTIONS)/im,
+  // FAR Clause pattern for Instructions (e.g. 52.212-1 Instructions to Offerors)
+  /(?:^|\n)\s*(?:\d{2}\.\d{3}-\d|\d+\.\d+)\s+(?:Instructions\s+to\s+Offerors)/im,
 ];
 
 const SECTION_M_PATTERNS = [
@@ -28,6 +30,8 @@ const SECTION_M_PATTERNS = [
   /(?:^|\n)\s*(?:SECTION|Section|PART|Part)\s+M\s*$/im,
   /(?:^|\n)\s*M[\s.:\-–—]+(?:Evaluation|EVALUATION)\s/im,
   /(?:^|\n)\s*(?:VOLUME|Volume)\s+(?:III|IV|3|4)[\s.:\-–—]+.*(?:Evaluation|EVALUATION)/im,
+  // FAR Clause pattern for Evaluation (e.g. 52.212-2 Evaluation or 15.304 Evaluation factors)
+  /(?:^|\n)\s*(?:\d{2}\.\d{3}-\d|\d+\.\d+)\s+(?:Evaluation(?:\s+factors)?)/im,
 ];
 
 /** Pattern to detect subsection references like L.4.3.2 or M.2.1 */

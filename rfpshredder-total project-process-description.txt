@@ -1,0 +1,883 @@
+================================================================================
+RFP SHREDDER — DETAILED PROCESS FLOW & ALGORITHM DOCUMENTATION
+================================================================================
+Prepared for Expert Analyst Review
+Date: March 3, 2026
+Version: 1.0
+================================================================================
+
+
+PURPOSE OF THIS DOCUMENT
+-------------------------
+This document describes the complete end-to-end process by which RFP Shredder
+ingests a federal Request for Proposal (PDF or DOCX), extracts every compliance
+requirement from Section L (Instructions to Offerors) and Section M (Evaluation
+Criteria), classifies obligations, cross-references L-to-M mappings, and
+generates a formatted Excel compliance matrix.
+
+The goal is to enable an expert analyst to review the pipeline and suggest
+improvements for more robust, thorough, and accurate PDF/DOCX processing.
+
+
+================================================================================
+SECTION 1: HIGH-LEVEL PIPELINE OVERVIEW
+================================================================================
+
+The pipeline is a 13-step sequential process orchestrated by a single API
+endpoint (POST /api/shred). Steps 1–5 are pre-processing gates. Steps 6–11
+are the core extraction engine. Steps 12–13 handle logging and output.
+
+   ┌──────────────────────────────────────────────────────────────────┐
+   │  STEP 1:  Authenticate user (Supabase JWT)                       │
+   │  STEP 2:  Rate-limit check (10 shreds/hour per user)             │
+   │  STEP 3:  Subscription / trial check (free=1 shred, solo=10/mo)  │
+   │  STEP 4:  Read uploaded file from multipart/form-data             │
+   │  STEP 5:  Validate file (extension, MIME, magic bytes, size)      │
+   │  STEP 6:  Parse document → per-page text                         │
+   │  STEP 7:  Detect Section L and Section M boundaries               │
+   │  STEP 8:  Chunk text into API-safe segments                       │
+   │  STEP 9:  Extract requirements via Claude API (per-chunk)         │
+   │  STEP 10: Cross-reference Section L → Section M                   │
+   │  STEP 11: Generate formatted Excel workbook                       │
+   │  STEP 12: Log metadata to database (never document content)       │
+   │  STEP 13: Return .xlsx file as download                           │
+   └──────────────────────────────────────────────────────────────────┘
+
+ZERO DOCUMENT RETENTION POLICY:
+The file buffer is nulled immediately after parsing (Step 6). All parsed text
+is nulled after Excel generation (Step 11). No document content is ever stored
+in the database, on disk, or in logs. Only metadata (page count, requirement
+count, processing time) is persisted.
+
+
+================================================================================
+SECTION 2: FILE VALIDATION (Step 5)
+================================================================================
+
+Source: src/lib/shredder/file-validator.ts
+
+The validation layer performs 6 sequential checks before any parsing begins:
+
+  CHECK 1 — File Size
+  ├── Maximum: 50 MB (MAX_FILE_SIZE_BYTES = 50 * 1024 * 1024)
+  └── Returns error code FILE_TOO_LARGE if exceeded.
+
+  CHECK 2 — Empty File
+  ├── Buffer length must be > 0
+  └── Returns error code FILE_EMPTY.
+
+  CHECK 3 — File Extension
+  ├── Extracts extension from filename (case-insensitive)
+  ├── Allowed: .pdf, .docx
+  └── Returns UNSUPPORTED_FILE_TYPE for anything else.
+
+  CHECK 4 — MIME Type
+  ├── Allowed MIME types:
+  │     application/pdf
+  │     application/vnd.openxmlformats-officedocument.wordprocessingml.document
+  └── Returns UNSUPPORTED_FILE_TYPE for non-matching MIME.
+
+  CHECK 5 — Magic Bytes (the real defense against renamed files)
+  ├── Reads first 4 bytes of the buffer:
+  │     PDF:  0x25 0x50 0x44 0x46  (%PDF)
+  │     DOCX: 0x50 0x4B 0x03 0x04  (PK.. — ZIP archive header)
+  └── Returns UNSUPPORTED_FILE_TYPE if bytes don't match known signatures.
+
+  CHECK 6 — Cross-Check Extension vs. Magic Bytes
+  ├── Detected type from magic bytes must match the claimed extension.
+  ├── Catches files renamed to fool extension-based checks.
+  └── Returns UNSUPPORTED_FILE_TYPE if mismatch.
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • DOCX magic byte check identifies ZIP archives, not specifically DOCX.
+    Any .zip file renamed to .docx would pass magic byte validation.
+    Suggestion: Also check for [Content_Types].xml inside the ZIP to confirm
+    it is a valid OOXML document.
+  • No virus/malware scanning is performed on the uploaded file.
+  • Password-protected PDFs are not explicitly detected at this stage — they
+    will fail at parsing (Step 6) with a generic error.
+
+
+================================================================================
+SECTION 3: PDF PARSING (Step 6 — PDF path)
+================================================================================
+
+Source: src/lib/shredder/pdf-parser.ts
+Library: pdf-parse (Node.js wrapper around Mozilla's PDF.js)
+
+ALGORITHM:
+  1. Call pdf-parse with the raw Buffer, max pages = MAX_PAGE_COUNT + 1 (301)
+     to detect over-limit documents.
+
+  2. VALIDATION CHECKS:
+     a. Page count = 0             → Error: PDF_EMPTY
+     b. Page count > 300           → Error: PAGE_LIMIT_EXCEEDED
+     c. Extracted text < 50 chars  → Error: SCANNED_PDF
+        (Indicates a scanned/image-only PDF with no extractable text layer)
+
+  3. SPLIT TEXT INTO PAGES (splitTextIntoPages function):
+     ┌─────────────────────────────────────────────────────────────┐
+     │  PRIMARY STRATEGY: Split on form-feed characters (\f)       │
+     │  pdf-parse inserts \f between pages in many PDFs.           │
+     │  If split count >= total pages → use these splits directly. │
+     │                                                             │
+     │  FALLBACK STRATEGY: If no \f characters found, distribute   │
+     │  text evenly across pages:                                  │
+     │    lines_per_page = ceil(total_lines / total_pages)         │
+     │    Chunk lines sequentially into groups of lines_per_page.  │
+     └─────────────────────────────────────────────────────────────┘
+
+  4. OUTPUT: ParseResult object containing:
+     • pages[]: Array of { pageNumber, text } for each page
+     • totalPages: Integer count of pages
+     • fullText: All pages concatenated with "[PAGE N]" markers
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • pdf-parse (PDF.js) is a text-extraction-only library. It does NOT preserve:
+      - Table structure (tables are flattened to linear text)
+      - Column layouts (multi-column pages are merged left-to-right, often garbled)
+      - Header/footer separation (headers repeat as text within each page)
+      - Embedded images or diagrams (silently ignored)
+      - Form fields / interactive elements
+  • The fallback page-splitting strategy (even distribution of lines) is a crude
+    heuristic. For PDFs without form-feeds, page attribution is unreliable.
+    This means page numbers cited in requirements may be inaccurate.
+  • Scanned PDF detection is a simple character-count threshold (< 50 chars).
+    A PDF with a small text watermark over scanned images would pass this check
+    but still have nearly no extractable content.
+  • No OCR capability — scanned PDFs are immediately rejected.
+  • pdf-parse struggles with:
+      - Ligatures (e.g., "fi" rendered as a single glyph)
+      - Non-standard font encodings
+      - Right-to-left text
+      - Encrypted PDFs (even those with no user password but an owner password)
+  • The library is loaded via require() (not ESM import) due to Next.js webpack
+    incompatibility (documented in LESSONS.md, Lesson 4).
+
+
+================================================================================
+SECTION 4: DOCX PARSING (Step 6 — DOCX path)
+================================================================================
+
+Source: src/lib/shredder/docx-parser.ts
+Library: mammoth.js
+
+ALGORITHM:
+  1. Call mammoth.extractRawText({ buffer }) → gives raw text (no formatting).
+
+  2. VALIDATION:
+     • Text length < 10 chars → Error: DOCX_EMPTY
+
+  3. SPLIT INTO LOGICAL SECTIONS (splitDocxIntoSections function):
+     ┌─────────────────────────────────────────────────────────────────┐
+     │  DOCX has NO inherent page numbers (pagination depends on the   │
+     │  rendering application — Word, LibreOffice, etc.).              │
+     │                                                                 │
+     │  PRIMARY STRATEGY: Split on regex pattern:                      │
+     │    /\n(?=(?:SECTION|Section|PART|Part)\s+[A-Z0-9])|(?:\n{3,})/  │
+     │                                                                 │
+     │  This splits at:                                                │
+     │    a. Lines starting with "Section X" or "Part X"               │
+     │    b. Large blank gaps (3+ consecutive newlines)                │
+     │                                                                 │
+     │  FALLBACK STRATEGY (if ≤ 1 section detected):                  │
+     │    Split into ~2000-character chunks at paragraph boundaries    │
+     │    (double-newline splits).                                     │
+     └─────────────────────────────────────────────────────────────────┘
+
+  4. OUTPUT: ParseResult with logical sections treated as "pages."
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • mammoth.extractRawText() strips ALL formatting — no bold, italic, heading
+    levels, font sizes, or indentation are preserved. This means:
+      - Heading hierarchy is lost (cannot distinguish H1 from body text)
+      - Numbered lists lose their structure
+      - Table data becomes linearized text without cell boundaries
+  • "Page numbers" are meaningless for DOCX — they are section indices, not
+    actual page numbers from the rendered document. Any page reference in
+    extracted requirements will be inaccurate.
+  • The section-splitting regex is fragile:
+      - Only handles "Section X" and "Part X" patterns
+      - Misses numbered headings like "1.0 INTRODUCTION"
+      - Misses all-caps headings without "Section" prefix
+      - Three newlines is an arbitrary threshold for "large gap"
+  • No handling of DOCX-specific structures like:
+      - Track changes (accepted vs. rejected)
+      - Comments / annotations
+      - Embedded OLE objects
+      - Section breaks (page break, continuous, etc.)
+
+
+================================================================================
+SECTION 5: SECTION L AND SECTION M DETECTION (Step 7)
+================================================================================
+
+Source: src/lib/shredder/section-detector.ts
+
+PURPOSE:
+Identify where Section L (Instructions to Offerors) and Section M (Evaluation
+Criteria) begin and end within the document. These are the two key sections
+of a federal RFP for compliance matrix building.
+
+ALGORITHM:
+
+  1. JOIN all page texts into a single fullText string (pages separated by \n\n).
+
+  2. SEARCH FOR SECTION L using 4 regex patterns (tried in order, first match wins):
+     ┌─────────────────────────────────────────────────────────────────┐
+     │  Pattern 1: "Section L" / "SECTION L" / "Part L" + title      │
+     │    /(?:^|\n)\s*(?:SECTION|Section|PART|Part)\s+L[\s.:\-–—]+   │
+     │     (.+?)(?:\n|$)/i                                            │
+     │                                                                │
+     │  Pattern 2: "SECTION L" alone on a line                        │
+     │    /(?:^|\n)\s*(?:SECTION|Section|PART|Part)\s+L\s*$/im        │
+     │                                                                │
+     │  Pattern 3: "L. Instructions" or "L – Instructions"           │
+     │    /(?:^|\n)\s*L[\s.:\-–—]+(?:Instructions|INSTRUCTIONS)\s/im │
+     │                                                                │
+     │  Pattern 4: Volume-based (e.g., "Volume III – Instructions")   │
+     │    /(?:^|\n)\s*(?:VOLUME|Volume)\s+(?:III|IV|3|4)[\s.:\-–—]+  │
+     │     .*(?:Instructions|INSTRUCTIONS)/im                         │
+     └─────────────────────────────────────────────────────────────────┘
+
+  3. SEARCH FOR SECTION M using parallel patterns (same structure, M instead of L,
+     "Evaluation" keyword instead of "Instructions").
+
+  4. DETERMINE SECTION BOUNDARIES:
+     a. Start page: Found by re-searching each page individually for the
+        matching pattern (avoids character-offset bugs across concatenated text;
+        this fix is documented in LESSONS.md, Lesson 3).
+     b. End boundary: Search for the next major section header after the match:
+        - For Section L: looks for Section M, N, O, or numbered sections
+        - For Section M: looks for Section N, O, P, or numbered sections
+     c. Section text: Slice fullText from match start to next-section start.
+
+  5. ERROR HANDLING:
+     • Neither L nor M found → Return HTTP 422 with SECTIONS_NOT_FOUND error.
+       The pipeline stops here — no extraction is attempted.
+     • Only L found → Continue with warnings; no L-to-M cross-ref will be generated.
+     • Only M found → Continue with warnings; extraction proceeds on M only.
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • REGEX-ONLY DETECTION — relies entirely on text patterns. Misses:
+      - RFPs that use non-standard section labeling (e.g., "Volume III:
+        Technical Proposal Instructions" without the letter "L")
+      - RFPs that embed L/M content within a larger "Section L" that also
+        contains boilerplate (Sections A–K)
+      - RFPs that use Roman numerals (e.g., "Section XII")
+      - State/local RFPs or commercial RFPs that don't follow FAR structure
+  • SINGLE MATCH POLICY: Only the first match per section type is used.
+    If an RFP references "Section L" in a table of contents AND in the actual
+    section body, the TOC reference may be captured instead of the real section.
+  • END BOUNDARY DETECTION is fragile:
+      - Assumes sections follow alphabetical order (L → M → N)
+      - If Section N is missing, Section M may extend to the end of the document,
+        capturing appendices, attachments, and other irrelevant content.
+  • NO HANDLING OF:
+      - Amendments / modifications (common in federal procurement)
+      - Multiple volumes / separate PDF attachments referenced in the RFP
+      - Section L/M content split across multiple attachments
+      - Nested subsections within L or M (L.1, L.2, etc.) — detected for
+        reference numbering but not for boundary refinement
+
+
+================================================================================
+SECTION 6: TEXT CHUNKING (Step 8)
+================================================================================
+
+Source: src/lib/shredder/chunker.ts
+
+PURPOSE:
+Split the extracted text into chunks small enough for the Claude API's context
+window while minimizing information loss at chunk boundaries.
+
+CONSTANTS:
+  MAX_TOKENS_PER_CHUNK  = 100,000 tokens
+  CHUNK_OVERLAP_TOKENS  = 50 tokens
+  CHARS_PER_TOKEN       = 4 (heuristic: 1 token ≈ 4 English characters)
+  MAX_CHARS_PER_CHUNK   = 400,000 characters
+  OVERLAP_CHARS         = 200 characters
+
+ALGORITHM:
+
+  1. TOKEN ESTIMATION: text.length / 4 (simple char-to-token approximation).
+
+  2. SINGLE-CHUNK FAST PATH: If total tokens ≤ 100,000 → return entire text as
+     one chunk (no splitting needed). Most RFPs under ~100 pages fit this case.
+
+  3. MULTI-CHUNK SPLITTING (splitIntoChunks function):
+     ┌─────────────────────────────────────────────────────────────────┐
+     │  • Iterate through pages sequentially.                         │
+     │  • Accumulate page text into the current chunk.                │
+     │  • When adding the next page would exceed MAX_CHARS_PER_CHUNK: │
+     │    a. Save the current chunk (with startPage and endPage).     │
+     │    b. Start a new chunk with OVERLAP_CHARS from the end of     │
+     │       the previous chunk prepended.                            │
+     │  • Overlap extraction tries to break at:                       │
+     │    1st preference: Sentence boundary (". " followed by capital)│
+     │    2nd preference: Paragraph boundary (\n)                     │
+     │    Fallback: Raw character slice                               │
+     └─────────────────────────────────────────────────────────────────┘
+
+  4. Each chunk includes page markers ("[PAGE N]") for page attribution.
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • TOKEN ESTIMATION IS VERY ROUGH: The 4-chars-per-token heuristic can be
+    significantly off for:
+      - Legal/technical jargon (longer words = fewer tokens per word)
+      - Section references and numbering (short tokens)
+      - Tables rendered as text (irregular whitespace)
+    The actual Claude tokenizer (tiktoken / Anthropic's tokenizer) is not used.
+    Risk: Chunks may exceed the actual API token limit.
+  • OVERLAP IS TINY: Only 50 tokens (~200 characters) of overlap between chunks.
+    A requirement that spans more than 200 characters at a chunk boundary could
+    be split with insufficient context for either chunk's extraction.
+  • PAGE-BOUNDARY SPLITTING: Chunks always break at page boundaries. If a single
+    page is longer than MAX_CHARS_PER_CHUNK, it is NOT further split — it would
+    be included in a chunk that exceeds the limit. (The code comment says this
+    is "unlikely for RFPs" but very long appendices could trigger it.)
+  • No semantic-aware chunking: The chunker doesn't consider section structure,
+    heading hierarchy, or requirement boundaries when deciding where to split.
+
+
+================================================================================
+SECTION 7: REQUIREMENT EXTRACTION VIA CLAUDE API (Step 9)
+================================================================================
+
+Source: src/lib/shredder/extractor.ts + extraction-prompt.ts
+
+This is the core AI step — the most critical for accuracy.
+
+CLAUDE API CONFIGURATION:
+  Model:       claude-sonnet-4-20250514 (or ANTHROPIC_MODEL env override)
+  Max tokens:  8,192 per response
+  Temperature: Default (not explicitly set — Claude's default)
+  Processing:  Sequential (one chunk at a time, not parallel)
+
+SYSTEM PROMPT (EXTRACTION_SYSTEM_PROMPT):
+  Instructs Claude to act as a "government contracting compliance analyst."
+  
+  Key instructions to Claude:
+  • Extract EVERY requirement, no matter how minor.
+  • Each requirement should be a single, self-contained statement.
+  • If a paragraph contains multiple requirements, split them into separate entries.
+  • Preserve the exact obligation language (shall, must, should, etc.).
+  • Include the full requirement text, not a summary.
+  • Use [PAGE N] markers for page numbers if present.
+  • For Section M: note the evaluation factor/subfactor name.
+  • Do NOT include headers, footers, TOC entries, or boilerplate.
+  • Do NOT include general informational statements without obligations.
+  • Respond with ONLY a JSON array — no markdown, no explanation.
+
+USER PROMPT (per chunk):
+  • Section context sentence (e.g., "This text is from Section L...")
+  • Structured output format specification (JSON array schema)
+  • The raw RFP text chunk
+
+EXPECTED JSON OUTPUT (per chunk):
+  [
+    {
+      "rfpSection": "L.4.3.2",
+      "page": 45,
+      "requirementText": "The offeror shall provide...",
+      "obligationLevel": "shall",
+      "evalFactor": ""
+    },
+    ...
+  ]
+
+RESPONSE PARSING (parseExtractionResponse function):
+  1. Strip markdown code fences if present (```json ... ```)
+  2. Parse JSON
+  3. Validate each item has a non-empty "requirementText" field
+  4. If JSON parse fails → attempt partial recovery:
+     • Regex scan for individual JSON objects containing "requirementText"
+     • Extract and parse each individually
+
+SECTION TYPE DETERMINATION:
+  Each chunk is labeled as 'L', 'M', or 'both' based on whether its page range
+  overlaps with the detected Section L and/or Section M page ranges.
+
+NORMALIZATION (normalizeRequirement function):
+  For each raw requirement from Claude:
+  1. Assign an ID: "L-001", "L-002", ... or "M-001", "M-002", ...
+     (prefix based on whether rfpSection starts with "M" or if evalFactor is populated)
+  2. Validate obligation level against known set: {shall, must, should, may, will,
+     is required to, is expected to}
+  3. If Claude's obligation level is not recognized → re-classify locally using
+     the obligation classifier (see Section 8)
+  4. Set evalFactorMapping for M requirements; leave empty for L requirements
+     (filled in by cross-reference step)
+
+ERROR HANDLING:
+  • If any single chunk's API call fails → the entire pipeline throws
+    ExtractionError. No partial results are returned.
+  • No retry logic — a single failure kills the whole shred.
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • NO RETRY / RESILIENCE: A transient Claude API error (rate limit, timeout,
+    5xx) fails the entire pipeline. No retry with exponential backoff.
+  • SEQUENTIAL PROCESSING: Chunks are processed one at a time. For large
+    documents with multiple chunks, this can be slow. Parallel processing
+    with rate-limit awareness would improve throughput.
+  • MAX_TOKENS = 8,192: This limits the number of requirements Claude can
+    extract per chunk. A very dense chunk (many requirements per page) could
+    hit this limit and truncate the JSON response mid-stream.
+  • TEMPERATURE NOT SET: Using Claude's default temperature may introduce
+    variability in extraction. Setting temperature=0 would make extraction
+    more deterministic and reproducible.
+  • SINGLE-PASS EXTRACTION: Each chunk is processed once. No verification pass,
+    no consensus mechanism, no self-consistency checking. If Claude misses a
+    requirement or hallucinates one, there is no correction mechanism.
+  • NO TABLE AWARENESS: The prompt doesn't instruct Claude on how to handle
+    tabular data (which is common in Section L/M). Tables arrive as linearized
+    text and may be misinterpreted.
+  • NO CONTEXT ABOUT THE WHOLE DOCUMENT: Each chunk is extracted independently.
+    Claude has no awareness of what was extracted from other chunks. This can
+    cause inconsistent section numbering, duplicated requirements, or missed
+    cross-chunk references.
+  • PARTIAL PARSE RECOVERY IS FRAGILE: The regex-based fallback for malformed
+    JSON can miss requirements with escaped quotes or nested objects.
+  • NO VALIDATION OF CLAUDE'S PAGE NUMBERS: Claude assigns page numbers based
+    on [PAGE N] markers, but these are not cross-checked against the original
+    document. If the page-splitting was inaccurate (see Section 3), all page
+    numbers downstream will be wrong.
+
+
+================================================================================
+SECTION 8: OBLIGATION CLASSIFICATION (used in Steps 9 and 12)
+================================================================================
+
+Source: src/lib/shredder/obligation-classifier.ts
+
+PURPOSE:
+When Claude's returned obligation level is invalid or missing, locally classify
+the obligation level by scanning the requirement text for keywords.
+
+ALGORITHM — KEYWORD PRECEDENCE (highest priority first):
+  ┌────────────────────────────────────────────────────────────┐
+  │  1. "is required to"    →  is required to (mandatory)     │
+  │  2. "shall"             →  shall (federal mandatory)      │
+  │  3. "must"              →  must (strong mandatory)        │
+  │  4. "is expected to"    →  is expected to (strong rec.)   │
+  │  5. "will"              →  will (future mandatory)        │
+  │  6. "should"            →  should (recommendation)        │
+  │  7. "may"               →  may (optional/permissive)      │
+  │  DEFAULT:               →  shall (conservative fallback)  │
+  └────────────────────────────────────────────────────────────┘
+
+The classifier returns the FIRST matched keyword in precedence order.
+Default to "shall" (mandatory) if no keyword is found — conservative approach
+to avoid missing mandatory requirements.
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • SIMPLE KEYWORD MATCHING: Does not consider negation or context.
+    "The offeror shall NOT submit..." would be classified as "shall"
+    even though the obligation is a prohibition, not an affirmative duty.
+  • NO MULTI-KEYWORD HANDLING: If a requirement contains both "shall" and "may"
+    (e.g., "The offeror shall submit X, and may optionally include Y"), only
+    "shall" is returned because it has higher precedence. The "may" clause is
+    lost as a separate requirement (depends on Claude splitting it).
+  • "will" IS AMBIGUOUS: In federal contracting, "will" can be a statement of
+    government intent ("the government will provide") vs. an obligation
+    ("the contractor will deliver"). Both are classified the same.
+  • FIRST-MATCH WINS: Uses simple regex.test() — only checks if the keyword
+    exists ANYWHERE in the text. Does not check if the keyword is part of the
+    obligation clause vs. quoting another document.
+
+
+================================================================================
+SECTION 9: DEDUPLICATION (within Step 9)
+================================================================================
+
+Source: src/lib/shredder/deduplicator.ts
+
+PURPOSE:
+When text chunks overlap, the same requirement may be extracted by Claude from
+both chunks. This module detects and removes such duplicates.
+
+ALGORITHM:
+
+  1. SIMILARITY METRIC: Word-level Jaccard similarity
+     ┌──────────────────────────────────────────────────────────────┐
+     │  For two requirement texts A and B:                          │
+     │    a. Lowercase both texts                                   │
+     │    b. Remove punctuation, split on whitespace                │
+     │    c. Filter out words ≤ 2 characters and stop words         │
+     │    d. Compute: intersection(A, B) / union(A, B)              │
+     │                                                              │
+     │  Stop words removed: the, and, for, are, but, not, you, all, │
+     │  can, was, one, our, out, has, have, from, that, this, with, │
+     │  they, been, will, each, make, like, into, than, them, then, │
+     │  also, just, over, such, more, some, very                    │
+     └──────────────────────────────────────────────────────────────┘
+
+  2. THRESHOLD: Jaccard similarity ≥ 0.85 (85%) → treat as duplicate.
+
+  3. DUPLICATE RESOLUTION:
+     • Compare every pair (i, j) where j > i
+     • If similarity ≥ 0.85, mark j as consumed
+     • Keep the version with the LONGER requirementText (more context)
+     • O(n²) pairwise comparison
+
+  4. RE-NUMBERING: After deduplication, IDs are re-assigned sequentially
+     (L-001, L-002, ... M-001, M-002, ...).
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • O(n²) COMPLEXITY: For a document with 500 requirements, this is 125,000
+    comparisons. Not a performance concern for typical RFPs but could be for
+    very large documents.
+  • JACCARD SIMILARITY LIMITATIONS:
+      - Word order is completely ignored. Two sentences with the same words but
+        different meanings would be flagged as duplicates.
+      - Bag-of-words approach loses semantic meaning.
+  • 85% THRESHOLD IS HEURISTIC:
+      - Too high: legitimate duplicates with slightly different phrasing survive.
+      - Too low: distinct but topically similar requirements get merged.
+      - Not tuned against a labeled dataset.
+  • STOP WORDS LIST IS SMALL: Only 28 common English stop words. Does NOT
+    include GovCon-specific high-frequency terms (contractor, offeror,
+    government, proposal, etc.), which could inflate similarity scores.
+    (NOTE: The crossref module DOES include govcon stop words, but the
+    deduplicator does not — this is an inconsistency.)
+  • CROSS-SECTION DEDUPLICATION: An L requirement and an M requirement with
+    similar text could be flagged as duplicates, even though they represent
+    different aspects (instruction vs. evaluation criterion). The deduplicator
+    does not check whether duplicates are in the same section.
+  • KEEPING LONGER TEXT: The assumption that longer = better context is
+    generally reasonable but not always correct. A shorter, crisper extraction
+    could be more accurate than a longer one that includes surrounding noise.
+
+
+================================================================================
+SECTION 10: CROSS-REFERENCE ENGINE (Step 10)
+================================================================================
+
+Source: src/lib/shredder/crossref.ts
+
+PURPOSE:
+Map each Section L requirement to its corresponding Section M evaluation factor.
+This tells proposal managers which instruction requirements are evaluated under
+which criteria, enabling strategic prioritization.
+
+ALGORITHM — THREE MATCHING STRATEGIES (in priority order):
+
+  STRATEGY 1: EXPLICIT REFERENCES (weight: 3x)
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Check if the L requirement text mentions an M section       │
+  │  reference (e.g., "as described in M.2.1"), or if an M      │
+  │  requirement text mentions an L section reference.           │
+  │                                                              │
+  │  Uses word-boundary regex: /\bM\.2\.1\b/i                   │
+  │  Score: +1 for L mentions M, +1 for M mentions L            │
+  │  Multiplied by 3 → high confidence when both reference       │
+  │  each other explicitly.                                      │
+  └──────────────────────────────────────────────────────────────┘
+
+  STRATEGY 2: SECTION NUMBERING ALIGNMENT (weight: 2x)
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Check if section numbers align after removing the L/M       │
+  │  prefix. E.g., L.4.3 maps to M.4.3.                         │
+  │                                                              │
+  │  • Exact match (4.3.2 = 4.3.2) → score 1.0                  │
+  │  • First-level match (4.x.x = 4.y.y) → score 0.5            │
+  │  Multiplied by 2.                                            │
+  │                                                              │
+  │  This convention is common in DoD RFPs where L and M         │
+  │  sections are structured in parallel.                         │
+  └──────────────────────────────────────────────────────────────┘
+
+  STRATEGY 3: KEYWORD SIMILARITY (weight: 1x)
+  ┌──────────────────────────────────────────────────────────────┐
+  │  Jaccard similarity on keyword sets (same approach as        │
+  │  deduplicator but with GovCon stop words filtered out):      │
+  │                                                              │
+  │  Extra stop words: shall, must, should, may, will, would,    │
+  │  could, offeror, contractor, government, proposal, required  │
+  │                                                              │
+  │  Minimum word length: 4 characters                           │
+  │  Score > 0.3 → upgrade from 'low' to 'medium' confidence     │
+  └──────────────────────────────────────────────────────────────┘
+
+SCORING:
+  Total score = (Strategy 1 score × 3) + (Strategy 2 score × 2) + (Strategy 3 score)
+  For each L requirement, the M requirement with the highest total score wins.
+  
+  Confidence levels:
+    'high'   — explicit cross-reference found (Strategy 1 fired)
+    'medium' — section alignment or strong keyword overlap
+    'low'    — only weak keyword similarity
+
+OUTPUT:
+  • Each L requirement gets its evalFactorMapping updated with the matched
+    M section and factor description (truncated to 50 chars).
+  • A CrossReference[] array is generated for Sheet 2 of the Excel output.
+
+KNOWN LIMITATIONS / AREAS FOR REVIEW:
+  • ONE-TO-ONE MAPPING ONLY: Each L requirement maps to at most ONE M factor.
+    In reality, a single instruction may be evaluated under multiple factors.
+  • NO THRESHOLD FOR MINIMUM MATCH: Even a very low score results in a mapping.
+    There is no "no match" state — every L requirement will get mapped to
+    SOME M factor if M requirements exist, even with near-zero similarity.
+  • KEYWORD SIMILARITY IS SHALLOW: Jaccard on bags of words misses:
+      - Synonyms and related terms
+      - Multi-word phrases ("past performance" vs. "prior experience")
+      - Semantic structure
+  • NO AI-ASSISTED CROSS-REFERENCING: The cross-reference is entirely
+    algorithmic (no Claude API call). Using AI for this step could significantly
+    improve accuracy, especially for complex multi-volume RFPs.
+  • SECTION NUMBERING ALIGNMENT ASSUMES PARALLEL STRUCTURE: Many RFPs do NOT
+    number L and M sections in parallel. When they don't, Strategy 2 produces
+    false positive mappings.
+
+
+================================================================================
+SECTION 11: EXCEL GENERATION (Step 11)
+================================================================================
+
+Source: src/lib/shredder/excel-generator.ts
+Library: ExcelJS
+
+WORKBOOK STRUCTURE:
+
+  SHEET 1: "Compliance Matrix"
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  8 columns:                                                       │
+  │    A: Req ID         (e.g., L-001, M-023)                         │
+  │    B: RFP Section    (e.g., L.4.3.2)                              │
+  │    C: Page           (integer)                                    │
+  │    D: Requirement Text (full text, word-wrapped)                  │
+  │    E: Obligation Level (color-coded by severity)                  │
+  │    F: Eval Factor Mapping (from cross-ref)                        │
+  │    G: Response Strategy (empty — for user to fill in)             │
+  │    H: Compliance Status (dropdown: Compliant/Partial/Non-Comp/NA) │
+  │                                                                   │
+  │  Formatting:                                                      │
+  │    • Header row: Navy blue (#1B365D) background, white bold text   │
+  │    • Frozen header row (stays visible on scroll)                   │
+  │    • Auto-filter enabled on all columns                            │
+  │    • Alternating row fill (light gray on even rows)                │
+  │    • Obligation Level cell color coding:                           │
+  │        Red:    shall, must, is required to     (mandatory)         │
+  │        Yellow: should, will, is expected to    (strong rec.)       │
+  │        Green:  may                             (optional)          │
+  │    • Compliance Status: Data validation dropdown                   │
+  │    • Thin borders on all cells                                     │
+  │    • Footer: "Generated by RFP Shredder | date | pages | reqs"    │
+  │    • Disclaimer: "AI-generated. Always verify against original."   │
+  └───────────────────────────────────────────────────────────────────┘
+
+  SHEET 2: "L-M Cross Reference" (only if cross-references exist)
+  ┌───────────────────────────────────────────────────────────────────┐
+  │  6 columns:                                                       │
+  │    A: L Req ID                                                    │
+  │    B: L Section                                                   │
+  │    C: L Requirement Summary (truncated to 80 chars)               │
+  │    D: M Section                                                   │
+  │    E: M Eval Factor                                               │
+  │    F: Confidence (high/medium/low, color-coded)                   │
+  │                                                                   │
+  │  Same header/border styling as Sheet 1.                            │
+  │  Confidence color coding: green=high, yellow=medium, red=low      │
+  └───────────────────────────────────────────────────────────────────┘
+
+
+================================================================================
+SECTION 12: COMPLETE DATA FLOW DIAGRAM
+================================================================================
+
+  User uploads file.pdf
+        │
+        ▼
+  ┌─────────────┐     ┌─────────────────┐
+  │  Auth Check  │────►│  Rate Limit     │
+  │  (Supabase)  │     │  (10/hr/user)   │
+  └─────────────┘     └────────┬────────┘
+                               │
+                               ▼
+                      ┌────────────────┐
+                      │  Subscription  │
+                      │  / Trial Check │
+                      └────────┬───────┘
+                               │
+                               ▼
+                      ┌────────────────┐
+                      │  Validate File │
+                      │  (ext + MIME + │
+                      │  magic bytes + │
+                      │  size ≤ 50MB)  │
+                      └────────┬───────┘
+                               │
+                    ┌──────────┴──────────┐
+                    ▼                     ▼
+            ┌───────────┐         ┌───────────┐
+            │ parsePDF  │         │ parseDOCX │
+            │ (pdf-parse)│        │ (mammoth) │
+            └─────┬─────┘        └─────┬─────┘
+                  │                     │
+                  └──────────┬──────────┘
+                             │
+                    ┌────────▼────────┐
+                    │  fileBuffer =   │
+                    │  null (purge)   │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼─────────┐
+                    │  detectSections  │
+                    │  (regex for L/M) │
+                    └────────┬─────────┘
+                             │
+                    ┌────────▼────────┐
+                    │   chunkText     │
+                    │  (≤100K tokens  │
+                    │   per chunk)    │
+                    └────────┬────────┘
+                             │
+                    ┌────────▼─────────────┐
+                    │  extractRequirements  │
+                    │  (Claude API per      │
+                    │   chunk → JSON)       │
+                    │   + normalize         │
+                    │   + classify oblig.   │
+                    │   + deduplicate       │
+                    └────────┬─────────────┘
+                             │
+                    ┌────────▼───────────────┐
+                    │  generateCrossReferences│
+                    │  (L→M mapping via      │
+                    │   3 strategies)        │
+                    └────────┬───────────────┘
+                             │
+                    ┌────────▼──────────┐
+                    │  generateExcel    │
+                    │  (ExcelJS → .xlsx │
+                    │   2 sheets)       │
+                    └────────┬──────────┘
+                             │
+                    ┌────────▼──────────┐
+                    │  Log metadata to  │
+                    │  shred_log table  │
+                    │  (no doc content) │
+                    └────────┬──────────┘
+                             │
+                    ┌────────▼──────────┐
+                    │  parseResult =    │
+                    │  null (final purge)│
+                    └────────┬──────────┘
+                             │
+                             ▼
+                    Return .xlsx as download
+
+
+================================================================================
+SECTION 13: SUMMARY OF KEY RISKS AND IMPROVEMENT OPPORTUNITIES
+================================================================================
+
+For easy reference, here is a consolidated list of the most impactful areas
+where an expert analyst's input would be most valuable:
+
+1. PDF TEXT EXTRACTION QUALITY
+   Current: pdf-parse (PDF.js wrapper) — text-only, no layout awareness.
+   Risk: Tables, multi-column layouts, headers/footers all produce garbled text.
+   Potential improvements:
+     • Use a layout-aware PDF parser (e.g., pdfplumber via Python sidecar,
+       Apache Tika, Amazon Textract, or Google Document AI)
+     • Add OCR capability for scanned PDFs (Tesseract, AWS Textract)
+     • Implement table detection and structured extraction
+     • Detect and strip repeating headers/footers
+
+2. SECTION DETECTION ROBUSTNESS
+   Current: 4 hardcoded regex patterns per section type.
+   Risk: Non-standard RFP formats are missed entirely.
+   Potential improvements:
+     • Use LLM to identify sections (send first few pages to Claude with
+       "identify where Section L and M begin and end")
+     • Build a section classifier trained on diverse RFP formatting styles
+     • Support user-provided hints ("Section L starts on page X")
+     • Handle amendment documents that modify L/M sections
+
+3. EXTRACTION ACCURACY AND COMPLETENESS
+   Current: Single-pass Claude Sonnet, 8K max output tokens, no verification.
+   Risk: Requirements can be missed, hallucinated, or partially extracted.
+   Potential improvements:
+     • Multi-pass extraction (extract → verify → reconcile)
+     • Increase max_tokens or use a larger context model
+     • Set temperature=0 for deterministic output
+     • Add a verification pass comparing requirement count against document
+       density (expected requirements per page)
+     • Use structured outputs / tool calling for more reliable JSON
+     • Implement confidence scoring per requirement
+
+4. CROSS-REFERENCE ACCURACY
+   Current: Algorithmic only — regex matching + keyword Jaccard similarity.
+   Risk: Weak matches, no "no match" threshold, one-to-one only.
+   Potential improvements:
+     • Use Claude API for semantic L→M matching
+     • Support many-to-many mappings
+     • Add minimum confidence threshold (below which = "no match found")
+     • Allow user to review and correct mappings
+
+5. CHUNK BOUNDARY HANDLING
+   Current: 200-character overlap, page-boundary splitting.
+   Risk: Requirements spanning page boundaries may be split or duplicated.
+   Potential improvements:
+     • Larger overlap (500-1000 chars)
+     • Semantic chunking based on section/paragraph structure
+     • Use actual tokenizer instead of char/4 heuristic
+     • Post-merge step that reconciles requirements from adjacent chunks
+
+6. ERROR HANDLING AND RESILIENCE
+   Current: Single failure kills the entire pipeline.
+   Potential improvements:
+     • Retry with exponential backoff on transient API errors
+     • Partial results mode — return what was extracted even if one chunk fails
+     • Progress streaming to the frontend (current: all-or-nothing)
+     • Better error messages for edge cases (password-protected PDFs, etc.)
+
+7. DOCX HANDLING
+   Current: Raw text extraction only; no page numbers; crude section splitting.
+   Potential improvements:
+     • Use DOCX XML structure for heading-level detection
+     • Preserve table structure from DOCX (tables are natively structured in OOXML)
+     • Track change handling (extract only accepted changes)
+
+8. QUALITY ASSURANCE
+   Current: No benchmarking against known-good compliance matrices.
+   Potential improvements:
+     • Build a test corpus of RFPs with hand-labeled compliance matrices
+     • Measure precision, recall, and F1 for requirement extraction
+     • Measure accuracy of obligation classification
+     • Measure accuracy of L→M cross-references
+     • Track metrics over time as the pipeline evolves
+
+
+================================================================================
+SECTION 14: SOURCE FILE INVENTORY
+================================================================================
+
+All pipeline code lives in: src/lib/shredder/
+
+  File                      Lines   Purpose
+  ─────────────────────────────────────────────────────────────────
+  types.ts                    94    Shared interfaces and constants
+  file-validator.ts          133    Upload validation (6-check gate)
+  pdf-parser.ts              111    PDF → per-page text via pdf-parse
+  docx-parser.ts             127    DOCX → logical sections via mammoth
+  section-detector.ts        170    Section L/M boundary detection
+  chunker.ts                 135    Text → API-safe chunks with overlap
+  extraction-prompt.ts        70    System + user prompts for Claude
+  extractor.ts               222    Claude API calls + JSON parsing
+  obligation-classifier.ts    82    Keyword-based obligation classification
+  deduplicator.ts            116    Cross-chunk duplicate removal
+  crossref.ts                205    L→M cross-reference (3 strategies)
+  excel-generator.ts         262    ExcelJS workbook generation (2 sheets)
+
+  API Route:
+  src/app/api/shred/route.ts  280   Pipeline orchestration (POST handler)
+
+  Total pipeline code: ~2,007 lines across 13 files
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

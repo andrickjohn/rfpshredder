@@ -1,0 +1,133 @@
+{\rtf1\ansi\ansicpg1252\cocoartf2868
+\cocoatextscaling0\cocoaplatform0{\fonttbl\f0\fnil\fcharset0 .SFNS-Semibold;\f1\fnil\fcharset0 .SFNS-Regular;\f2\froman\fcharset0 TimesNewRomanPSMT;
+\f3\fswiss\fcharset0 Helvetica;}
+{\colortbl;\red255\green255\blue255;\red14\green14\blue14;}
+{\*\expandedcolortbl;;\cssrgb\c6700\c6700\c6700;}
+\margl1440\margr1440\vieww11520\viewh8400\viewkind0
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f0\b\fs44 \cf2 \uc0\u55357 \u56615  PROMPT 1 \'97 Fix Search Filtering
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Modify Strategy 1 (API mode) to prioritize FAR Part 15-type solicitations.\
+\
+Changes:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	Remove NAICS codes unrelated to professional services.\
+	2.	Default NAICS to:\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\li420\sl324\slmult1\pardirnatural\partightenfactor0
+\cf2 [\'91541511\'92,\'91541512\'92,\'91541519\'92,\'91541611\'92,\'91541330\'92]\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	3.	Exclude noticeType = \'93Combined Synopsis/Solicitation\'94\
+	4.	Only include noticeType = \'93Solicitation\'94\
+	5.	Reduce lookback to 90 days.\
+	6.	If estimated award value field exists and < $5M, skip.\
+\
+Remove keyword-based filtering at API search stage.\
+Keywords should only be applied after downloading the base solicitation file.\
+\
+Keep rate-limit protections unchanged.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f3\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+
+\f0\b\fs44 \uc0\u55357 \u56615  PROMPT 2 \'97 Attachment Prioritization Logic
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Modify attachment processing logic across all strategies:\
+\
+When evaluating resourceLinks or download links:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	Score filenames:\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\li420\sl324\slmult1\pardirnatural\partightenfactor0
+\cf2 +3 if filename contains solicitation number\
++2 if contains \'93RFP\'94\
++2 if contains \'93Solicitation\'94\
++1 if contains \'93Final\'94 or \'93Conformed\'94\
+-2 if contains \'93Attachment\'94\
+-3 if contains \'93Amendment\'94\
+-2 if contains \'93Pricing\'94\
+-2 if contains \'93Q&A\'94\
+-2 if contains \'93Template\'94\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	2.	Sort attachments by score descending.\
+	3.	Only download top 2 scoring attachments per opportunity.\
+\
+Do not download all attachments blindly.\
+Keep ZIP handling unchanged.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f3\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+
+\f0\b\fs44 \uc0\u55357 \u56615  PROMPT 3 \'97 Strong L/M Structural Detection
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Replace simple substring keyword matching with structured detection:\
+\
+For a PDF to qualify:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	It must contain both:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	\'93SECTION L\'94 within 100 characters of \'93INSTRUCTIONS\'94\
+	\'95	\'93SECTION M\'94 within 100 characters of \'93EVALUATION\'94\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	2.	OR:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	\'93INSTRUCTIONS TO OFFERORS\'94\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\li660\sl324\slmult1\pardirnatural\partightenfactor0
+\cf2 AND\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	\'93EVALUATION FACTORS FOR AWARD\'94\
+\
+If only one appears \uc0\u8594  do not count as match.\
+\
+Remove simple includes(keyword) logic.\
+Keep lowercase normalization.\
+Keep minimum text length check.\
+\
+Return confidence score in logs.\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\pardirnatural\partightenfactor0
+
+\f3\fs24 \cf0 \
+\uc0\u11835 \
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\sl324\slmult1\pardirnatural\partightenfactor0
+
+\f1\fs28 \cf2 \
+
+\f0\b\fs44 \uc0\u55357 \u56615  PROMPT 4 \'97 Fix \'93Seen\'94 Logic
+\f1\b0\fs28 \
+\
+\pard\tx860\tx1420\tx1980\tx2540\tx3100\tx3660\tx4220\tx4780\tx5340\tx5900\tx6460\tx7020\li300\sl324\slmult1\partightenfactor0
+\cf2 Modify seen_solicitations handling:\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+
+\f2 \cf2 	1.	Do NOT mark opportunity as seen immediately.\
+	2.	Mark as seen only if:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	No attachments found\
+\pard\tx560\tx1120\tx1680\tx2240\tx2800\tx3360\tx3920\tx4480\tx5040\tx5600\tx6160\tx6720\li660\sl324\slmult1\pardirnatural\partightenfactor0
+\cf2 OR\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	All high-scoring attachments processed and no L/M found.\
+\pard\tqr\tx260\tx420\li420\fi-420\sl324\slmult1\sb240\partightenfactor0
+\cf2 	3.	If download failed due to network or parsing error:\
+\pard\tqr\tx500\tx660\li660\fi-660\sl324\slmult1\sb240\partightenfactor0
+\cf2 	\'95	Do NOT mark as seen.\
+	\'95	Log as retryable.\
+\
+Preserve dedup behavior otherwise.\
+}

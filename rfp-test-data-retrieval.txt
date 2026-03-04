@@ -1,0 +1,731 @@
+================================================================================
+RFP SHREDDER — SAM.GOV TEST DATA RETRIEVAL TOOLS
+================================================================================
+Documentation of Superuser-Only Tools for Finding RFP PDFs on SAM.gov
+Date: March 3, 2026
+================================================================================
+
+
+PURPOSE
+-------
+To validate and improve RFP Shredder's PDF processing pipeline, we need real
+federal RFP documents that contain Section L (Instructions to Offerors) and
+Section M (Evaluation Criteria). These tools automate the process of searching
+SAM.gov (the U.S. government's System for Award Management), identifying
+opportunities with downloadable attachments, downloading files, scanning them
+for Section L/M content, and saving matches locally for pipeline testing.
+
+All of these tools are SUPERUSER-ONLY — gated by a hard-coded email check:
+    user.email === 'admin@automatemomentum.com'
+
+Non-admin users are redirected away from the admin dashboard, and the API
+routes return HTTP 403 Forbidden.
+
+
+================================================================================
+SECTION 1: TOOL INVENTORY — WHAT EXISTS
+================================================================================
+
+There are 4 distinct retrieval strategies, implemented across 3 standalone
+scripts, 3 API routes, and 1 admin dashboard UI:
+
+  STRATEGY 1: SAM.gov Public API ("API Mode")
+  ├── Script:    scripts/scrape-sam.js           (standalone CLI)
+  ├── API Route: /api/admin/scrape-sam/route.ts   (web-accessible via dashboard)
+  └── Invoked via: Dashboard "Start API Profile" button
+
+  STRATEGY 2: Headless Browser / UI Bypass ("UI Mode")
+  ├── Script:    scripts/scrape-sam-ui.js         (standalone CLI via Puppeteer)
+  ├── API Route: /api/admin/scrape-sam-ui/route.ts (web-accessible, local only)
+  └── Invoked via: Dashboard "Start UI Bypass" button
+
+  STRATEGY 3: Direct Lookup (URL or Solicitation Number)
+  ├── Script:    scripts/scrape-sam-direct.js      (standalone CLI via Puppeteer)
+  ├── API Route: /api/admin/scrape-sam-direct/route.ts (web-accessible, local only)
+  └── Invoked via: Dashboard "Direct Lookup" input box
+
+  STRATEGY 4: Seed URLs (Pre-built search queries)
+  └── Built into the dashboard UI as quick-select buttons
+      (IT Services RFP, Cybersecurity, Software Dev)
+
+ADMIN DASHBOARD:
+  ├── Page:      src/app/dashboard/admin/page.tsx
+  ├── Client UI: src/app/dashboard/admin/sam-scraper-client.tsx
+  └── URL:       /dashboard/admin (admin@automatemomentum.com only)
+
+LOCAL STORAGE:
+  ├── sam_samples/               — Downloaded PDF files
+  ├── sam_samples/opp_cache.json — Cached opportunity metadata (24-hr TTL)
+  └── sam_samples/seen_solicitations.json — Dedup list of already-checked opps
+
+
+================================================================================
+SECTION 2: ACCESS CONTROL
+================================================================================
+
+Every tool enforces the same superuser gate:
+
+  API ROUTES (server-side):
+    const supabase = await createClient();
+    const { data: { user } } = await supabase.auth.getUser();
+    if (!user || user.email !== 'admin@automatemomentum.com') {
+        return NextResponse.json({ error: 'Forbidden' }, { status: 403 });
+    }
+
+  ADMIN PAGE (server-side, before render):
+    if (!user || user.email !== 'admin@automatemomentum.com') {
+        redirect('/dashboard');
+    }
+
+  STANDALONE SCRIPTS (no auth check):
+    scripts/scrape-sam.js, scrape-sam-ui.js, and scrape-sam-direct.js can be
+    run directly from the terminal with `node scripts/scrape-sam.js`. They have
+    NO authentication — they are intended for local development use only and
+    should never be exposed publicly.
+
+  VERCEL BLOCKING:
+    The UI Bypass and Direct Lookup routes check `process.env.VERCEL` and
+    immediately return HTTP 400 if running on Vercel, because Puppeteer
+    (headless Chrome) cannot run in Vercel's serverless environment.
+
+
+================================================================================
+SECTION 3: STRATEGY 1 — SAM.GOV PUBLIC API
+================================================================================
+
+Files:
+  scripts/scrape-sam.js              (149 lines, standalone CLI version)
+  src/app/api/admin/scrape-sam/route.ts  (262 lines, web API version)
+
+API USED:
+  SAM.gov Opportunities API v2
+  Endpoint: https://api.sam.gov/opportunities/v2/search
+  Auth: API key via query parameter (SAM_GOV_API_KEY env var)
+  Rate limits: Extremely strict — SAM.gov aggressively rate-limits (429/503)
+
+HOW IT WORKS:
+
+  1. CONFIGURATION (configurable via dashboard UI):
+     ├── NAICS Codes: Default ['541511', '541512', '541519', '541611', '541330']
+     │   (Custom App Dev, System Design, Other CS, Management Consulting, Engineering)
+     │   All professional services — construction/software-publisher codes removed.
+     ├── Keywords: ['section l', 'section m', 'schedule l', 'schedule m',
+     │              'instructions to offerors', 'evaluation criteria',
+     │              'evaluation factors', 'proposal preparation']
+     │   *** Keywords are NOT used at the API search stage. ***
+     │   *** They are only applied AFTER downloading the attachment PDF. ***
+     ├── Lookback Days: Default 90 days
+     ├── Min Award Value: Default $5,000,000 (configurable via body.minAwardValue)
+     └── Dashboard has a "Shuffle 🎲" button to randomize NAICS codes
+
+  2. OPPORTUNITY SEARCH (API query — first stage):
+     ├── For each NAICS code (limited to first 2 to avoid rate limits):
+     │   └── GET https://api.sam.gov/opportunities/v2/search
+     │       ?api_key=KEY&limit=100&ncode=CODE
+     │       &postedFrom=DATE&postedTo=DATE&ptype=o
+     │                                         ^^^^^^^^
+     │       ptype=o restricts results to "Solicitation" notice type only.
+     │       This excludes Combined Synopsis/Solicitations, Sources Sought,
+     │       Presolicitations, and other non-FAR-Part-15 notice types.
+     ├── Parse response: data.opportunitiesData[]
+     ├── Extract: noticeId, title, solicitationNumber, resourceLinks[],
+     │            noticeType, awardValue
+     └── Cache results to opp_cache.json (24-hour TTL)
+
+  3. POST-QUERY FILTERING (second stage, before download):
+     ├── Exclude any opportunity whose noticeType contains "combined"
+     │   (belt-and-suspenders check — ptype=o should already exclude these)
+     ├── Skip if estimated award value exists AND is below $5M
+     │   (Checks: award.amount, estimatedTotalValue, awardAmount fields)
+     │   If no award value is present, the opportunity is NOT skipped.
+     ├── Deduplicate by noticeId
+     ├── Skip already-seen opportunities (from seen_solicitations.json)
+     ├── Skip opportunities with no resourceLinks (no attachments)
+     └── Sort by number of resourceLinks (most attachments first)
+
+  4. ATTACHMENT SCORING & DOWNLOAD (per opportunity):
+     ├── Limits: max 5 downloads total, max 15 opportunities checked
+     │
+     ├── PHASE 1 — PROBE & SCORE:
+     │   For each resourceLink URL:
+     │   ├── Lightweight probe to get content-disposition header
+     │   ├── Extract filename from content-disposition (or URL fallback)
+     │   ├── Score filename using scoreAttachment() (see Section 10A)
+     │   └── Collect all { link, filename, score } tuples
+     │
+     ├── Sort scored attachments by score DESCENDING
+     ├── Take only TOP 2 scoring attachments
+     ├── Log all scores for visibility
+     │
+     ├── PHASE 2 — DOWNLOAD (top 2 only):
+     │   For each selected attachment:
+     │   ├── Fetch the file with retry logic (3 retries, exponential backoff)
+     │   ├── Skip files < 1KB
+     │   │
+     │   ├── DETECT FILE TYPE by first 4-5 bytes:
+     │   │   ├── "%PDF" → PDF file
+     │   │   ├── "PK"   → ZIP archive (handled unchanged)
+     │   │   ├── "<" or "<!" → HTML error page (skip)
+     │   │   └── Other → Unknown format (skip)
+     │   │
+     │   ├── IF PDF:
+     │   │   ├── Parse with pdf-parse to extract text
+     │   │   ├── Convert to lowercase
+     │   │   ├── Search for each keyword in the text
+     │   │   └── If ANY keyword found → MATCH
+     │   │
+     │   └── ON MATCH:
+     │       ├── Save to sam_samples/ as SAM_API_{solicitation}_{N}.pdf
+     │       └── Emit result event to dashboard
+     │
+     └── Mark opportunity as "seen" regardless of match result
+
+  5. OUTPUT:
+     ├── Streams NDJSON (newline-delimited JSON) to the dashboard
+     ├── Message types: { type: 'log' | 'result' | 'done' | 'error' }
+     └── Dashboard displays logs in a terminal-style panel + results cards
+
+  STANDALONE SCRIPT DIFFERENCES (scripts/scrape-sam.js):
+     ├── Queries ALL 5 NAICS codes (not limited to 2)
+     ├── Same 90-day lookback window
+     ├── Same FAR Part 15 filters (Solicitation only, ≥$5M award)
+     ├── Stops after 3 successful downloads (not 5)
+     ├── Outputs to console instead of NDJSON stream
+     └── Has a hardcoded fallback API key in source code
+
+RATE LIMIT HANDLING:
+  fetchSafe() implements retry with exponential backoff:
+    ├── On HTTP 429 or 503: wait 3000ms × 2^attempt, then retry
+    ├── On network error: wait 2000ms, retry up to 3 times
+    └── Between NAICS queries: 1000ms delay
+    └── Between attachment downloads: 1500ms delay
+
+
+================================================================================
+SECTION 4: STRATEGY 2 — HEADLESS BROWSER (UI BYPASS)
+================================================================================
+
+Files:
+  scripts/scrape-sam-ui.js               (249 lines, Puppeteer-based)
+  src/app/api/admin/scrape-sam-ui/route.ts  (88 lines, spawns the script)
+
+WHY THIS EXISTS:
+  The SAM.gov public API has extremely aggressive rate limits, and the
+  resourceLinks returned by the API sometimes don't work (Access Denied,
+  broken URLs). This strategy bypasses the API entirely by using Puppeteer
+  to automate a real Chrome browser that navigates SAM.gov's actual website,
+  mimicking a human user.
+
+LOCAL ONLY:
+  This tool CANNOT run on Vercel (no headless Chrome available).
+  The API route checks process.env.VERCEL and blocks with HTTP 400.
+
+HOW IT WORKS:
+
+  1. BROWSER SETUP:
+     ├── Launch Puppeteer with headless Chrome
+     ├── Args: --no-sandbox, --disable-setuid-sandbox,
+     │         --disable-dev-shm-usage, --ignore-certificate-errors
+     ├── User-Agent: Spoofed as Chrome 120 on Windows
+     └── Viewport: 1920×1080
+
+  2. SEARCH NAVIGATION (per NAICS code):
+     ├── Navigate to SAM.gov search URL with NAICS filter:
+     │   https://sam.gov/search/?index=opp&page=1&pageSize=25
+     │   &sort=-modifiedDate&sfm[status][is_active]=true
+     │   &sfm[naics][0][key]=CODE&sfm[naics][0][value]=CODE
+     ├── Wait 5 seconds for Angular app to render
+     └── Extract opportunity links: all <a> elements whose href contains
+         "/opp/" and "/view"
+
+  3. OPPORTUNITY PROCESSING (up to 10 per NAICS, max 5 total downloads):
+     ├── Skip already-seen notice IDs
+     ├── Navigate to opportunity detail page
+     ├── Wait 4 seconds for page load
+     │
+     ├── CLICK ATTACHMENT TABS (multiple strategies):
+     │   Try selectors: [role="tab"], a, button, .tab-label,
+     │   .mat-tab-label, [class*="tab"]
+     │   Click any element whose textContent contains "attachment" or "document"
+     │   Wait 4 seconds for tab content to load
+     │
+     ├── FIND DOWNLOAD LINKS:
+     │   Scan all <a> elements for hrefs containing:
+     │     /download, api.sam.gov, /resource/, .pdf, .doc, .zip
+     │   Or text containing: .pdf, download, attachment
+     │
+     ├── DOWNLOAD WITH COOKIES:
+     │   ├── Extract browser cookies from Puppeteer
+     │   ├── Use Node.js http/https module (NOT fetch)
+     │   ├── Pass cookies as Cookie header
+     │   ├── Follow redirects (up to 5 hops)
+     │   ├── SSL: rejectUnauthorized: false (SAM.gov certificate issues)
+     │   └── 30-second timeout per download
+     │
+     └── PROCESS DOWNLOADS:
+          Score links → top 2 → download → check magic bytes → keyword scan
+
+  4. KEYWORD MATCHING:
+     Extended keyword list (compared to API mode):
+     ['section l', 'section m', 'schedule l', 'schedule m',
+      'instructions to offerors', 'evaluation criteria',
+      'evaluation factors', 'proposal preparation',
+      'proposal instructions', 'technical approach', 'past performance']
+
+  5. OUTPUT:
+     ├── Console logging with [UI] prefix
+     ├── Saved files: SAM_UI_{noticeId}_{N}.pdf
+     └── When spawned from API route: stdout is parsed and streamed to dashboard
+
+
+================================================================================
+SECTION 5: STRATEGY 3 — DIRECT LOOKUP
+================================================================================
+
+Files:
+  scripts/scrape-sam-direct.js              (252 lines, Puppeteer-based)
+  src/app/api/admin/scrape-sam-direct/route.ts  (105 lines, spawns the script)
+
+PURPOSE:
+  When you already have a specific SAM.gov opportunity URL or solicitation
+  number, this tool navigates directly to it and downloads its attachments.
+  No NAICS search is needed.
+
+LOCAL ONLY (same Puppeteer restriction as Strategy 2).
+
+HOW IT WORKS:
+
+  1. INPUT PARSING:
+     ├── If input is a full URL (starts with http): use as-is
+     ├── If input is a SAM.gov /opp/ URL: navigate directly
+     ├── If input is a URL with /search/: treat as search results page
+     └── If input is plain text (e.g., solicitation number):
+         Convert to search URL:
+         https://sam.gov/search/?index=opp&q={encoded text}
+         &sort=-modifiedDate&sfm[status][is_active]=true
+
+  2. SEARCH RESULTS HANDLING (if input was a search):
+     ├── Extract opportunity links from results page
+     ├── Navigate to each (up to 10 results, max 5 downloads)
+     └── For each: processOpp() — same attachment tab + download logic
+
+  3. DIRECT OPPORTUNITY HANDLING (if input was a single opp URL):
+     └── Navigate directly → processOpp()
+
+  4. processOpp() FUNCTION:
+     ├── Click attachment/document tabs (same multi-selector strategy)
+     ├── Wait 4 seconds
+     ├── Find download links
+     ├── Score all links by anchor text using scoreAttachment()
+     ├── Sort by score descending, take top 2
+     ├── For each of the top 2:
+     │   ├── Download with browser cookies
+     │   ├── Check magic bytes (PDF/ZIP)
+     │   ├── Extract ZIPs, scan for keywords
+     │   └── Save matches as SAM_Direct_{noticeId}_{N}.pdf
+     └── Return count of found PDFs
+
+  5. DEDUP:
+     ├── Loads seen_solicitations.json
+     ├── Skips already-seen noticeIds
+     └── Marks processed IDs as seen after processing
+
+
+================================================================================
+SECTION 6: STRATEGY 4 — SEED URLS
+================================================================================
+
+Built directly into the dashboard UI (sam-scraper-client.tsx).
+
+Three pre-built SAM.gov search URLs that are pre-filtered for high probability
+of finding RFPs with Section L/M content:
+
+  SEED 1: "IT Services RFP"
+  URL: https://sam.gov/search/?index=opp
+       &q=information+technology+services
+       &sort=-modifiedDate
+       &sfm[status][is_active]=true
+       &sfm[noticeType][0]=Combined Synopsis/Solicitation
+
+  SEED 2: "Cybersecurity"
+  URL: https://sam.gov/search/?index=opp
+       &q=cybersecurity+assessment
+       &sort=-modifiedDate
+       &sfm[status][is_active]=true
+       &sfm[noticeType][0]=Solicitation
+
+  SEED 3: "Software Dev"
+  URL: https://sam.gov/search/?index=opp
+       &q=software+development+services
+       &sort=-modifiedDate
+       &sfm[status][is_active]=true
+       &sfm[noticeType][0]=Solicitation
+
+These populate the Direct Lookup input field when clicked, and are then
+processed via Strategy 3 (Puppeteer direct lookup).
+
+
+================================================================================
+SECTION 7: ADMIN DASHBOARD UI
+================================================================================
+
+File: src/app/dashboard/admin/sam-scraper-client.tsx (419 lines)
+URL:  /dashboard/admin
+
+LAYOUT:
+
+  ┌─────────────────────────────────────────────────────────────────┐
+  │  Admin Dashboard                                                │
+  │  Super user tools.                                              │
+  ├─────────────────────────────────────────────────────────────────┤
+  │  SAM.gov RFP Sample Finder                                     │
+  │  Searches active small business IT / Software / Construction    │
+  │  opportunities for PDFs containing 'Section L' or 'Section M'. │
+  ├─────────────────────────────────────────────────────────────────┤
+  │                                                                 │
+  │  ┌─ FILTERS ─────────────────────────────────────────────────┐  │
+  │  │ NAICS Codes: [541511, 541512, ...] [Shuffle 🎲]          │  │
+  │  │ Keywords:    [section l, section m, ...]                  │  │
+  │  │ Lookback Days: [180]                                      │  │
+  │  └───────────────────────────────────────────────────────────┘  │
+  │                                                                 │
+  │  ┌─ API PANEL ──────────────┐  ┌─ UI BYPASS PANEL ───────────┐ │
+  │  │ [Start API Profile]      │  │ [Start UI Bypass]            │ │
+  │  │  Standard API (Extreme   │  │  Browser Engine (Bypasses    │ │
+  │  │  Rate Limits)            │  │  API limits)                 │ │
+  │  │                          │  │                              │ │
+  │  │ ┌────────┐ ┌──────────┐ │  │ ┌────────┐ ┌──────────┐    │ │
+  │  │ │ Logs   │ │ Results  │ │  │ │ Logs   │ │ Results  │    │ │
+  │  │ │(green  │ │          │ │  │ │(purple │ │          │    │ │
+  │  │ │ text)  │ │          │ │  │ │ text)  │ │          │    │ │
+  │  │ └────────┘ └──────────┘ │  │ └────────┘ └──────────┘    │ │
+  │  └──────────────────────────┘  └────────────────────────────┘  │
+  │                                                                 │
+  │  ┌─ DIRECT LOOKUP ──────────────────────────────────────────┐  │
+  │  │ 🎯 Direct Lookup                                         │  │
+  │  │ [https://sam.gov/opp/... or solicitation number] [Lookup] │  │
+  │  │ Seeds: [IT Services RFP] [Cybersecurity] [Software Dev]  │  │
+  │  │ ┌────────┐ ┌──────────┐                                  │  │
+  │  │ │ Logs   │ │ Results  │                                  │  │
+  │  │ └────────┘ └──────────┘                                  │  │
+  │  └──────────────────────────────────────────────────────────┘  │
+  │                                                                 │
+  │  ┌─ RUN HISTORY ────────────────────────────────────────────┐  │
+  │  │ 10:23 AM  [API]    Finished (2 found)  NAICS: 541511... │  │
+  │  │ 10:15 AM  [DIRECT] Finished (1 found)  URL: https://...  │  │
+  │  └──────────────────────────────────────────────────────────┘  │
+  └─────────────────────────────────────────────────────────────────┘
+
+STREAMING ARCHITECTURE:
+  All three scraper modes use NDJSON (newline-delimited JSON) streaming:
+  ├── Server returns a ReadableStream
+  ├── Client reads with response.body.getReader()
+  ├── Each line is a JSON object: { type: 'log'|'result'|'done', ... }
+  ├── 'log' messages appear in the terminal-style log panels
+  ├── 'result' messages populate the results cards
+  └── 'done' triggers the run history entry
+
+DASHBOARD FEATURES:
+  ├── Configurable filters (NAICS codes, keywords, lookback period)
+  ├── NAICS code randomizer ("Shuffle 🎲" button)
+  ├── Side-by-side log + results panels for API and UI modes
+  ├── Direct Lookup with seed URL quick-select buttons
+  ├── Session-level run history (timestamp, mode, filters, status)
+  └── Real-time streaming output (logs appear as they happen)
+
+
+================================================================================
+SECTION 8: LOCAL FILE STORAGE
+================================================================================
+
+All downloaded files and metadata are stored in: sam_samples/
+
+  FILE                        PURPOSE
+  ──────────────────────────────────────────────────────────────────
+  SAM_API_*.pdf               PDFs downloaded via API mode (Strategy 1)
+  SAM_UI_*.pdf                PDFs downloaded via UI Bypass (Strategy 2)
+  SAM_Direct_*.pdf            PDFs downloaded via Direct Lookup (Strategy 3)
+  opp_cache.json              Cached opportunity metadata from API queries
+  seen_solicitations.json     List of noticeIds already checked (dedup)
+  sam-gov-l-m-search-guide.rtf  Manual reference guide for SAM.gov searching
+
+CURRENT INVENTORY (as of March 3, 2026):
+  14 PDF files downloaded (all via API mode)
+  31 solicitations in the "seen" list
+  ~1670 lines in the opportunity cache (dozens of cached opportunities)
+
+  Examples of downloaded RFPs:
+  ├── SAM_API_1305M326Q0019.pdf            (73 KB)
+  ├── SAM_API_36C10A25Q0090.pdf            (888 KB)
+  ├── SAM_API_693JK426R600002.pdf          (112 KB)
+  ├── SAM_API_75FCMC26R0022.pdf            (114 KB)  — ClaimsCore
+  ├── SAM_API_ATLAS_1.pdf                  (222 KB)  — ATLAS ChBA
+  ├── SAM_API_FA8307_25_R_B057.pdf         (283 KB)
+  └── SAM_API_PANERD25P0000_001596.pdf     (789 KB)
+
+CACHE FILE (opp_cache.json):
+  ├── TTL: 24 hours (timestamp checked on load)
+  ├── Structure: { timestamp: epoch_ms, opportunities: [...] }
+  ├── Each opportunity: { noticeId, title, solicitationNumber, resourceLinks[] }
+  └── Prevents re-querying the SAM.gov API within the same day
+
+
+================================================================================
+SECTION 9: SECTION L/M DETECTION ALGORITHM
+================================================================================
+
+All strategies use the same structured detectSectionLM() function to determine
+whether a PDF contains FAR-compliant Section L and Section M content.
+
+*** Simple substring keyword matching has been REMOVED. ***
+*** A PDF must contain BOTH L and M signals to qualify. ***
+
+  ALGORITHM (detectSectionLM):
+    Input:  PDF buffer (parsed via pdf-parse)
+    Output: { match: boolean, confidence: number (0-100), patterns: string[] }
+
+    1. Parse PDF buffer with pdf-parse to extract raw text.
+    2. Convert all text to lowercase.
+    3. If extracted text < 100 characters → reject (scanned/empty PDF).
+
+    4. STRATEGY A — Proximity Match (confidence: 90%):
+       BOTH of these must be true:
+       ├── "section l" appears within 100 characters of "instructions"
+       └── "section m" appears within 100 characters of "evaluation"
+
+       Proximity is checked bidirectionally: the 100-char window extends
+       both before and after each occurrence of "section l" / "section m".
+
+    5. STRATEGY B — Exact Phrase Match (confidence: 95%):
+       BOTH of these must be true:
+       ├── Text contains "instructions to offerors"
+       └── Text contains "evaluation factors for award"
+
+    6. Match = (Strategy A passes) OR (Strategy B passes)
+       If both pass, confidence caps at 100%.
+
+    7. If only ONE signal is found (e.g., Section L but not M),
+       the file is NOT counted as a match. Confidence stays at 0%.
+
+  CONFIDENCE SCORING:
+    ├── 0%   — Neither strategy matched (no L+M pair found)
+    ├── 90%  — Strategy A matched (proximity)
+    ├── 95%  — Strategy B matched (exact phrases)
+    └── 100% — Both strategies matched (highest confidence)
+
+    Confidence is logged in all strategies for debugging:
+    "✅ MATCH [95%] Instructions to Offerors + Evaluation Factors for Award"
+    "❌ No L+M (confidence: 0%)"
+
+  WHY THIS REPLACES SIMPLE KEYWORD MATCHING:
+    The old approach used text.includes('section l') which had problems:
+    ├── "subsection layout" would false-positive on "section l"
+    ├── A cover letter mentioning "see Section L" would match
+    ├── Finding ONLY Section L (but not M) was counted as a match
+    └── No confidence scoring — binary match with no quality signal
+
+    The new approach:
+    ├── Requires BOTH L and M (not just one)
+    ├── Uses proximity to ensure "section l" is near "instructions"
+    ├── Uses exact FAR-standard phrases as a second strategy
+    ├── Returns confidence % for quality assessment
+    └── Eliminates most false positives from incidental mentions
+
+
+================================================================================
+SECTION 10: ZIP HANDLING
+================================================================================
+
+Many SAM.gov attachments are ZIP archives containing multiple documents.
+All three strategies handle ZIPs identically:
+
+  ALGORITHM (extractPdfsFromZip):
+    1. Detect ZIP by magic bytes: starts with "PK" (0x50 0x4B)
+    2. Load with JSZip.loadAsync(buffer)
+    3. Iterate all files in the ZIP:
+       ├── Skip directories
+       ├── Include files ending in .pdf, .doc, .docx
+       ├── Skip files < 1KB (too small to be real documents)
+       └── Extract as Node Buffer
+    4. For each extracted PDF: run detectSectionLM() (see Section 9)
+    5. If match: save individually (not the whole ZIP)
+
+  NESTED ZIPS: Not handled. If a ZIP contains another ZIP, the inner ZIP
+  is silently skipped (it won't match .pdf/.doc/.docx extension check).
+
+
+================================================================================
+SECTION 10A: ATTACHMENT SCORING ALGORITHM
+================================================================================
+
+All strategies use the same scoreAttachment() function to prioritize which
+attachments to download. This avoids wasting bandwidth (and rate-limit budget)
+on amendments, pricing templates, and Q&A documents.
+
+  ALGORITHM:
+    Input: filename (string), solicitationNumber (string)
+    Output: integer score (higher = more likely to be the base RFP)
+
+  SCORING TABLE:
+    ┌───────────────────────────────────┬────────┬───────────────────────────────┐
+    │ Pattern (case-insensitive)        │ Points │ Rationale                     │
+    ├───────────────────────────────────┼────────┼───────────────────────────────┤
+    │ Contains solicitation number      │   +3   │ Base document usually named   │
+    │                                   │        │ after the solicitation number  │
+    │ Contains "RFP"                    │   +2   │ Likely the main RFP document  │
+    │ Contains "Solicitation"           │   +2   │ Same signal                   │
+    │ Contains "Final" or "Conformed"   │   +1   │ Consolidated version          │
+    │ Contains "Attachment"             │   -2   │ Usually a supplement/exhibit  │
+    │ Contains "Amendment"              │   -3   │ Modifications, not the base   │
+    │ Contains "Pricing"                │   -2   │ Cost templates, not the RFP   │
+    │ Contains "Q&A" or "Questions"     │   -2   │ Q&A responses                 │
+    │ Contains "Template"               │   -2   │ Fill-in forms                 │
+    └───────────────────────────────────┴────────┴───────────────────────────────┘
+
+  EXAMPLE SCORES:
+    "FA8222-25-R-IAGSC_Solicitation.pdf"   →  +3 (sol#) +2 (Solicitation) = +5
+    "RFP_Final_Version.pdf"                →  +2 (RFP) +1 (Final) = +3
+    "Amendment_003.pdf"                    →  -3 (Amendment) = -3
+    "Attachment_J_Pricing_Template.xlsx"    →  -2 (Attachment) -2 (Pricing)
+                                              -2 (Template) = -6
+
+  BEHAVIOR:
+    ├── All attachment links are scored BEFORE any download occurs
+    ├── Links are sorted by score descending
+    ├── Only the TOP 2 scoring links are downloaded
+    ├── Scores are logged for visibility/debugging
+    └── ZIP handling is unchanged (ZIPs are processed if they score in top 2)
+
+  SCORING SOURCE BY STRATEGY:
+    ├── Strategy 1 (API):    content-disposition filename from HEAD probe
+    ├── Strategy 2 (UI):     anchor element textContent from page
+    ├── Strategy 3 (Direct): anchor element textContent from page
+    └── Strategy 1 (CLI):    content-disposition filename from HEAD request
+
+
+================================================================================
+SECTION 11: ERROR HANDLING & RESILIENCE
+================================================================================
+
+  RETRY LOGIC:
+    ├── API calls: 3 retries with exponential backoff (3s, 6s, 12s)
+    ├── Download calls: 3 retries with backoff
+    ├── On 429/503: longer waits + break from NAICS loop (API mode)
+    └── On network error: retry with 2s base delay
+
+  RATE LIMIT PROTECTION:
+    ├── 1000ms delay between NAICS code queries
+    ├── 1500ms delay between attachment downloads
+    └── API mode limits to 2 NAICS codes per run (web version)
+
+  SSL CERTIFICATE ISSUES:
+    SAM.gov occasionally has SSL certificate verification issues.
+    Both Puppeteer scripts and downloadWithCookies use:
+      rejectUnauthorized: false
+      --ignore-certificate-errors (Puppeteer browser arg)
+
+  GRACEFUL DEGRADATION:
+    ├── PDF parse failure → skip file, continue to next
+    ├── ZIP extraction failure → skip, continue
+    ├── Download failure → log as retryable, continue to next link
+    └── Single opportunity failure → see SMART SEEN-MARKING below
+
+  SMART SEEN-MARKING (dedup):
+    Opportunities are tracked in seen_solicitations.json to avoid re-checking.
+    *** Marking is NO LONGER unconditional. ***
+
+    Mark as seen IF:
+    ├── No attachments found (nothing to retry later)
+    ├── All high-scoring attachments processed cleanly (no L+M found)
+    └── Match found (already downloaded)
+
+    Do NOT mark as seen IF:
+    ├── Network/download error occurred on any attachment
+    ├── Access Denied / 403 response received
+    ├── Parse error (corrupt PDF or unexpected format)
+    └── Rate-limit hit (429/503) aborted processing
+
+    When NOT marked as seen:
+    ├── Logged: "⏸️ NOT marking as seen (retryable errors occurred)"
+    ├── Individual errors logged: "🔄 Retryable: network/parse error"
+    └── Opportunity will be retried on the next run
+
+  HARD LIMITS (prevent runaway):
+    ├── API Mode:    max 5 downloads, max 15 opps checked
+    ├── UI Mode:     max 5 downloads, max 10 opps per NAICS, 5 NAICS codes
+    ├── Direct Mode: max 5 downloads, max 10 results navigated
+    └── All modes:   redirect limit of 5 hops for downloads
+
+
+================================================================================
+SECTION 12: ENVIRONMENT VARIABLES
+================================================================================
+
+  Required:
+    SAM_GOV_API_KEY          — SAM.gov API key for Opportunities API v2
+                               (Only needed for Strategy 1 / API mode)
+
+  Used by scripts (via env when spawned from API routes):
+    TARGET_URL               — Direct lookup URL (Strategy 3)
+    TARGET_KEYWORDS          — Comma-separated keyword overrides
+    TARGET_NAICS             — Comma-separated NAICS code overrides
+
+  Note: The standalone script scrape-sam.js has a hardcoded fallback API key
+  in the source code. This should be removed for production.
+
+
+================================================================================
+SECTION 13: HOW TO USE EACH TOOL
+================================================================================
+
+OPTION A: Web Dashboard (recommended)
+  1. Log in as admin@automatemomentum.com
+  2. Navigate to /dashboard/admin
+  3. Adjust NAICS codes, keywords, and lookback days as desired
+  4. Click "Start API Profile" for API-based search, or
+     "Start UI Bypass" for browser-based search (local only)
+  5. Watch real-time logs in the terminal panel
+  6. Matching PDFs appear in the Results panel and are saved to sam_samples/
+
+OPTION B: Command Line (standalone scripts)
+  Run from the project root:
+
+  # Strategy 1: API search
+  SAM_GOV_API_KEY=your-key node scripts/scrape-sam.js
+
+  # Strategy 2: UI bypass (requires Puppeteer/Chrome)
+  node scripts/scrape-sam-ui.js
+
+  # Strategy 3: Direct lookup
+  TARGET_URL="https://sam.gov/opp/abc123/view" node scripts/scrape-sam-direct.js
+  # or with a solicitation number:
+  TARGET_URL="FA8222-25-R-IAGSC" node scripts/scrape-sam-direct.js
+
+OPTION C: Seed URLs from Dashboard
+  1. Go to /dashboard/admin
+  2. In the "Direct Lookup" section, click one of the seed buttons
+     (IT Services RFP, Cybersecurity, Software Dev)
+  3. Click "Lookup"
+
+
+================================================================================
+SECTION 14: SOURCE FILE SUMMARY
+================================================================================
+
+  File                                             Lines  Strategy
+  ────────────────────────────────────────────────────────────────────
+  scripts/scrape-sam.js                             149   1 (API CLI)
+  scripts/scrape-sam-ui.js                          249   2 (UI CLI)
+  scripts/scrape-sam-direct.js                      252   3 (Direct CLI)
+  src/app/api/admin/scrape-sam/route.ts             262   1 (API Web)
+  src/app/api/admin/scrape-sam-ui/route.ts           88   2 (UI Web)
+  src/app/api/admin/scrape-sam-direct/route.ts      105   3 (Direct Web)
+  src/app/dashboard/admin/page.tsx                   41   Dashboard page
+  src/app/dashboard/admin/sam-scraper-client.tsx    419   Dashboard UI
+
+  Total: ~1,565 lines across 8 files
+
+
+================================================================================
+END OF DOCUMENT
+================================================================================

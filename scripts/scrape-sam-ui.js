@@ -85,16 +85,61 @@ async function extractPdfsFromZip(zipBuf) {
     return pdfs;
 }
 
-async function checkKeywords(buf, keywords) {
+function detectSectionLMFromText(text) {
+    if (text.length < 100) return { match: false, confidence: 0, patterns: [] };
+    const norm = text.replace(/\s+/g, ' ');
+    const lSignals = [
+        ['section l', 'Section L'], ['part l', 'Part L'], ['l. instructions', 'L. Instructions'],
+        ['instructions to offerors', 'Instructions to Offerors'], ['instructions to quoters', 'Instructions to Quoters'],
+        ['proposal preparation instructions', 'Proposal Prep Instructions'], ['proposal instructions', 'Proposal Instructions'],
+    ];
+    const mSignals = [
+        ['section m', 'Section M'], ['part m', 'Part M'], ['m. evaluation', 'M. Evaluation'],
+        ['evaluation criteria', 'Evaluation Criteria'], ['evaluation factors', 'Evaluation Factors'],
+        ['evaluation factors for award', 'Eval Factors for Award'], ['basis for award', 'Basis for Award'],
+    ];
+    const matchedL = [], matchedM = [];
+    for (const [pat, label] of lSignals) { if (norm.includes(pat)) matchedL.push(label); }
+    for (const [pat, label] of mSignals) { if (norm.includes(pat)) matchedM.push(label); }
+    const match = matchedL.length > 0 && matchedM.length > 0;
+    let confidence = 0;
+    if (match) {
+        confidence = 85;
+        if (matchedL.length >= 2) confidence += 5;
+        if (matchedM.length >= 2) confidence += 5;
+        if (norm.includes('instructions to offerors') && norm.includes('evaluation factors for award')) confidence = Math.max(confidence, 95);
+        confidence = Math.min(confidence, 100);
+    }
+    const patterns = [];
+    if (matchedL.length > 0) patterns.push(`L: ${matchedL.join(', ')}`);
+    if (matchedM.length > 0) patterns.push(`M: ${matchedM.join(', ')}`);
+    return { match, confidence, patterns };
+}
+
+async function detectSectionLM(buf) {
     try {
         const parsed = await pdfParse(buf);
         const text = parsed.text.toLowerCase();
-        if (text.length < 100) return [];
-        return keywords.filter(kw => text.includes(kw));
-    } catch { return []; }
+        return detectSectionLMFromText(text);
+    } catch { return { match: false, confidence: 0, patterns: [] }; }
 }
 
-async function processBuffers(buffers, noticeId, keywords) {
+function scoreAttachment(name, solicitationNumber) {
+    const lower = (name || '').toLowerCase();
+    let score = 0;
+    if (solicitationNumber && lower.includes(solicitationNumber.toLowerCase())) score += 3;
+    if (lower.includes('rfp')) score += 2;
+    if (lower.includes('solicitation')) score += 2;
+    if (lower.includes('final') || lower.includes('conformed')) score += 1;
+    if (lower.includes('attachment')) score -= 2;
+    if (lower.includes('amendment')) score -= 3;
+    if (lower.includes('pricing')) score -= 2;
+    if (lower.includes('q&a') || lower.includes('q & a') || lower.includes('questions and answers')) score -= 2;
+    if (lower.includes('template')) score -= 2;
+    return score;
+}
+
+async function processBuffers(buffers, noticeId) {
     const results = [];
     for (const item of buffers) {
         if (isZip(item.buffer)) {
@@ -102,19 +147,19 @@ async function processBuffers(buffers, noticeId, keywords) {
             const pdfs = await extractPdfsFromZip(item.buffer);
             console.log(`[UI]    📄 ${pdfs.length} files inside`);
             for (const pdf of pdfs) {
-                const matched = await checkKeywords(pdf.buffer, keywords);
-                if (matched.length > 0) {
-                    results.push({ buffer: pdf.buffer, name: pdf.name, matched });
+                const detection = await detectSectionLM(pdf.buffer);
+                if (detection.match) {
+                    results.push({ buffer: pdf.buffer, name: pdf.name, matched: detection.patterns, confidence: detection.confidence });
                 } else {
-                    console.log(`[UI]    ❌ No keywords in ${pdf.name}`);
+                    console.log(`[UI]    ❌ No L+M in ${pdf.name} (${detection.confidence}%)`);
                 }
             }
         } else if (isPdf(item.buffer)) {
-            const matched = await checkKeywords(item.buffer, keywords);
-            if (matched.length > 0) {
-                results.push({ buffer: item.buffer, name: item.name, matched });
+            const detection = await detectSectionLM(item.buffer);
+            if (detection.match) {
+                results.push({ buffer: item.buffer, name: item.name, matched: detection.patterns, confidence: detection.confidence });
             } else {
-                console.log(`[UI]    ❌ No keywords in ${item.name}`);
+                console.log(`[UI]    ❌ No L+M in ${item.name} (${detection.confidence}%)`);
             }
         } else {
             const hdr = item.buffer.slice(0, 5).toString('ascii');
@@ -210,32 +255,54 @@ async function scrapeSamUI() {
 
             console.log(`[UI] 📎 ${links.length} download links`);
 
+            // Score links by filename/text and take top 2
+            const solNum = ''; // UI mode doesn't have solicitationNumber readily
+            const scored = links.map(dl => ({
+                ...dl,
+                score: scoreAttachment(dl.text || dl.href, solNum)
+            }));
+            scored.sort((a, b) => b.score - a.score);
+            const topLinks = scored.length <= 6 ? scored : scored.slice(0, 6);
+            console.log(`[UI] 📊 Scored ${scored.length} links → downloading ${topLinks.length}${scored.length <= 6 ? ' (all)' : ' (top 6)'}`);
+
             const downloadedBuffers = [];
-            if (links.length > 0) {
+            let hadDownloadError = false;
+            if (topLinks.length > 0) {
                 const cookies = await page.cookies();
-                for (const dl of links.slice(0, 10)) {
-                    console.log(`[UI]    📥 ${dl.text || dl.href.substring(0, 60)}`);
+                for (const dl of topLinks) {
+                    console.log(`[UI]    📥 [score:${dl.score}] ${dl.text || dl.href.substring(0, 60)}`);
                     try {
                         const buf = await downloadWithCookies(dl.href, cookies);
                         if (buf.length > 1000) {
                             downloadedBuffers.push({ buffer: buf, name: dl.text || 'file' });
                             console.log(`[UI]    ✓ ${(buf.length / 1024).toFixed(0)}KB`);
                         }
-                    } catch (err) { console.log(`[UI]    ⚠️ ${err.message}`); }
+                    } catch (err) {
+                        hadDownloadError = true;
+                        console.log(`[UI]    ⚠️ ${err.message}`);
+                        console.log(`[UI]    🔄 Retryable: network error`);
+                    }
                 }
             }
 
             // Process all downloads (handles ZIP + PDF)
-            const matches = await processBuffers(downloadedBuffers, noticeId, KEYWORDS);
+            const matches = await processBuffers(downloadedBuffers, noticeId);
             for (const m of matches) {
                 if (totalDownloads >= 5) break;
                 const fname = `SAM_UI_${noticeId || Date.now()}_${totalDownloads}.pdf`;
                 fs.writeFileSync(path.join(OUTPUT_DIR, fname), m.buffer);
-                console.log(`[UI] ✅ MATCH! "${m.matched.join('", "')}" → ${fname}`);
+                console.log(`[UI] ✅ MATCH [${m.confidence || 0}%] ${m.matched.join(' + ')} → ${fname}`);
                 totalDownloads++;
             }
 
-            if (noticeId) markSeen(noticeId);
+            // Smart seen-marking: skip if download errors occurred
+            if (noticeId) {
+                if (hadDownloadError) {
+                    console.log(`[UI] ⏸️ NOT marking ${noticeId} as seen (retryable errors)`);
+                } else {
+                    markSeen(noticeId);
+                }
+            }
         }
     }
 

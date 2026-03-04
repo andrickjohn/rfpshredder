@@ -76,17 +76,63 @@ async function extractPdfsFromZip(zipBuf) {
     return pdfs;
 }
 
-async function checkKeywords(buf) {
+function detectSectionLMFromText(text) {
+    if (text.length < 100) return { match: false, confidence: 0, patterns: [] };
+    const norm = text.replace(/\s+/g, ' ');
+    const lSignals = [
+        ['section l', 'Section L'], ['part l', 'Part L'], ['l. instructions', 'L. Instructions'],
+        ['instructions to offerors', 'Instructions to Offerors'], ['instructions to quoters', 'Instructions to Quoters'],
+        ['proposal preparation instructions', 'Proposal Prep Instructions'], ['proposal instructions', 'Proposal Instructions'],
+    ];
+    const mSignals = [
+        ['section m', 'Section M'], ['part m', 'Part M'], ['m. evaluation', 'M. Evaluation'],
+        ['evaluation criteria', 'Evaluation Criteria'], ['evaluation factors', 'Evaluation Factors'],
+        ['evaluation factors for award', 'Eval Factors for Award'], ['basis for award', 'Basis for Award'],
+    ];
+    const matchedL = [], matchedM = [];
+    for (const [pat, label] of lSignals) { if (norm.includes(pat)) matchedL.push(label); }
+    for (const [pat, label] of mSignals) { if (norm.includes(pat)) matchedM.push(label); }
+    const match = matchedL.length > 0 && matchedM.length > 0;
+    let confidence = 0;
+    if (match) {
+        confidence = 85;
+        if (matchedL.length >= 2) confidence += 5;
+        if (matchedM.length >= 2) confidence += 5;
+        if (norm.includes('instructions to offerors') && norm.includes('evaluation factors for award')) confidence = Math.max(confidence, 95);
+        confidence = Math.min(confidence, 100);
+    }
+    const patterns = [];
+    if (matchedL.length > 0) patterns.push(`L: ${matchedL.join(', ')}`);
+    if (matchedM.length > 0) patterns.push(`M: ${matchedM.join(', ')}`);
+    return { match, confidence, patterns };
+}
+
+async function detectSectionLM(buf) {
     try {
         const parsed = await pdfParse(buf);
         const text = parsed.text.toLowerCase();
-        if (text.length < 100) return [];
-        return KEYWORDS.filter(kw => text.includes(kw));
-    } catch { return []; }
+        return detectSectionLMFromText(text);
+    } catch { return { match: false, confidence: 0, patterns: [] }; }
+}
+
+function scoreAttachment(name, solicitationNumber) {
+    const lower = (name || '').toLowerCase();
+    let score = 0;
+    if (solicitationNumber && lower.includes(solicitationNumber.toLowerCase())) score += 3;
+    if (lower.includes('rfp')) score += 2;
+    if (lower.includes('solicitation')) score += 2;
+    if (lower.includes('final') || lower.includes('conformed')) score += 1;
+    if (lower.includes('attachment')) score -= 2;
+    if (lower.includes('amendment')) score -= 3;
+    if (lower.includes('pricing')) score -= 2;
+    if (lower.includes('q&a') || lower.includes('q & a') || lower.includes('questions and answers')) score -= 2;
+    if (lower.includes('template')) score -= 2;
+    return score;
 }
 
 async function processOpp(page, noticeId) {
     let found = 0;
+    let hadError = false;
 
     // Click attachment tabs
     for (const sel of ['[role="tab"]', 'a', 'button', '.tab-label', '[class*="tab"]']) {
@@ -123,9 +169,21 @@ async function processOpp(page, noticeId) {
     log(`   📎 ${links.length} download links`);
 
     if (links.length > 0) {
+        // Score links by filename/text and take top 2
+        const scored = links.map(dl => ({
+            ...dl,
+            score: scoreAttachment(dl.text || dl.href, noticeId || '')
+        }));
+        scored.sort((a, b) => b.score - a.score);
+        const topLinks = scored.length <= 6 ? scored : scored.slice(0, 6);
+        log(`   📊 Scored ${scored.length} links → downloading ${topLinks.length}${scored.length <= 6 ? ' (all)' : ' (top 6)'}`);
+        if (scored.length > 0) {
+            log(`   📊 ${scored.map(s => `${(s.text || s.href).substring(0, 35)}(${s.score})`).join(', ')}`);
+        }
+
         const cookies = await page.cookies();
-        for (const dl of links.slice(0, 10)) {
-            log(`   📥 ${dl.text || dl.href.substring(0, 60)}`);
+        for (const dl of topLinks) {
+            log(`   📥 [score:${dl.score}] ${dl.text || dl.href.substring(0, 60)}`);
             try {
                 const buf = await downloadWithCookies(dl.href, cookies);
                 if (buf.length < 1000) { log(`      ⏭️ Too small`); continue; }
@@ -135,38 +193,42 @@ async function processOpp(page, noticeId) {
                     const pdfs = await extractPdfsFromZip(buf);
                     log(`      📄 ${pdfs.length} files inside`);
                     for (const pdf of pdfs) {
-                        const matched = await checkKeywords(pdf.buffer);
-                        if (matched.length > 0) {
+                        const detection = await detectSectionLM(pdf.buffer);
+                        if (detection.match) {
                             const fname = `SAM_Direct_${noticeId || Date.now()}_${found}.pdf`;
                             fs.writeFileSync(path.join(OUTPUT_DIR, fname), pdf.buffer);
-                            log(`      ✅ MATCH! "${matched.join('", "')}" → ${fname}`);
+                            log(`      ✅ MATCH [${detection.confidence}%] ${detection.patterns.join(' + ')} → ${fname}`);
                             send({ type: 'result', match: { oppTitle: 'Direct', solicitation: noticeId || '', link: dl.href, filename: fname } });
                             found++;
                         } else {
-                            log(`      ❌ ${pdf.name}: no keywords`);
+                            log(`      ❌ ${pdf.name}: no L+M (${detection.confidence}%)`);
                         }
                     }
                 } else if (isPdf(buf)) {
                     log(`      📄 PDF (${(buf.length / 1024).toFixed(0)}KB)`);
-                    const matched = await checkKeywords(buf);
-                    if (matched.length > 0) {
+                    const detection = await detectSectionLM(buf);
+                    if (detection.match) {
                         const fname = `SAM_Direct_${noticeId || Date.now()}_${found}.pdf`;
                         fs.writeFileSync(path.join(OUTPUT_DIR, fname), buf);
-                        log(`      ✅ MATCH! "${matched.join('", "')}" → ${fname}`);
+                        log(`      ✅ MATCH [${detection.confidence}%] ${detection.patterns.join(' + ')} → ${fname}`);
                         send({ type: 'result', match: { oppTitle: 'Direct', solicitation: noticeId || '', link: dl.href, filename: fname } });
                         found++;
                     } else {
-                        log(`      ❌ No keywords`);
+                        log(`      ❌ No L+M (${detection.confidence}%)`);
                     }
                 } else {
                     const hdr = buf.slice(0, 5).toString('ascii');
                     log(`      ⏭️ Not PDF/ZIP (header: "${hdr}")`);
                 }
-            } catch (err) { log(`      ⚠️ ${err.message}`); }
+            } catch (err) {
+                hadError = true;
+                log(`      ⚠️ ${err.message}`);
+                log(`      🔄 Retryable: network/parse error`);
+            }
         }
     }
 
-    return found;
+    return { found, hadError };
 }
 
 async function directLookup() {
@@ -229,17 +291,30 @@ async function directLookup() {
                 catch { log('   ⚠️ Timeout'); continue; }
                 await delay(3000);
 
-                const found = await processOpp(page, noticeId);
-                totalFound += found;
-                if (noticeId) markSeen(noticeId);
+                const result = await processOpp(page, noticeId);
+                totalFound += result.found;
+                if (noticeId) {
+                    if (result.hadError) {
+                        log(`   ⏸️ NOT marking ${noticeId} as seen (retryable errors)`);
+                    } else {
+                        markSeen(noticeId);
+                    }
+                }
             }
         } else {
             // Direct URL
             const match = url.match(/\/opp\/([^/]+)/);
             const noticeId = match ? match[1] : null;
             await delay(3000);
-            totalFound = await processOpp(page, noticeId);
-            if (noticeId) markSeen(noticeId);
+            const result = await processOpp(page, noticeId);
+            totalFound = result.found;
+            if (noticeId) {
+                if (result.hadError) {
+                    log(`   ⏸️ NOT marking ${noticeId} as seen (retryable errors)`);
+                } else {
+                    markSeen(noticeId);
+                }
+            }
         }
 
         log(`\n🏁 Done. ${totalFound} matching PDFs.`);

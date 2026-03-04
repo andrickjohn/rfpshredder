@@ -141,7 +141,15 @@ export async function POST(request: Request) {
 
     // PAGE LIMIT ENFORCEMENT
     const totalPages = parseResult.totalPages;
-    if (!isSuperAdmin) {
+    if (isSuperAdmin) {
+      if (totalPages > 3000) {
+        parseResult = null;
+        return NextResponse.json(
+          { error: { code: 'PAGE_LIMIT_EXCEEDED', message: `Even as an Admin, documents are capped at 3000 pages. This document is ${totalPages} pages. Please split it.` } },
+          { status: 400 }
+        );
+      }
+    } else {
       if (tier === 'solo' && totalPages > 300) {
         parseResult = null;
         return NextResponse.json(
@@ -172,71 +180,122 @@ export async function POST(request: Request) {
       );
     }
 
-    // 8. Chunk text
-    const chunks = chunkText(parseResult.pages);
+    // Stream Processing
+    const encoder = new TextEncoder();
+    const stream = new ReadableStream({
+      async start(controller) {
+        const sendEvent = (data: Record<string, unknown>) => {
+          try {
+            controller.enqueue(encoder.encode(JSON.stringify(data) + '\n'));
+          } catch (e) {
+            console.error('Failed to enqueue stream event:', e);
+          }
+        };
 
-    // 9. Extract requirements via Claude API
-    const requirements = await extractRequirements(
-      chunks,
-      sections.sectionL,
-      sections.sectionM
-    );
+        // Heartbeat to prevent edge timeouts during long synchronous blocks like Excel generation
+        const heartbeatInterval = setInterval(() => {
+          sendEvent({ type: 'ping' });
+        }, 5000);
 
-    // 10. Cross-reference L to M
-    const { requirements: crossRefReqs, crossRefs } = generateCrossReferences(requirements);
+        try {
+          // 8. Chunk text
+          sendEvent({ type: 'progress', step: 2, message: `Parsing document structure (${parseResult!.totalPages} pages)...` });
+          const chunks = chunkText(parseResult!.pages);
 
-    // 11. Generate Excel
-    const excelBuffer = await generateExcel(crossRefReqs, crossRefs, {
-      totalPages: parseResult.totalPages,
-      processingTimeMs: Date.now() - startTime,
+          // 9. Extract requirements via Claude API
+          sendEvent({ type: 'progress', step: 3, message: `Extracting Section L & M requirements (0/${chunks.length} chunks)...`, current: 0, total: chunks.length });
+          const requirements = await extractRequirements(
+            chunks,
+            sections.sectionL,
+            sections.sectionM,
+            (currentChunk, totalChunks) => {
+              sendEvent({
+                type: 'progress',
+                step: 3,
+                message: `Extracting Section L & M requirements (${currentChunk}/${totalChunks} chunks)...`,
+                current: currentChunk,
+                total: totalChunks
+              });
+            }
+          );
+
+          // 10. Cross-reference L to M
+          sendEvent({ type: 'progress', step: 5, message: 'Generating cross-references...' });
+          const { requirements: crossRefReqs, crossRefs } = generateCrossReferences(requirements);
+
+          // 11. Generate Excel
+          sendEvent({ type: 'progress', step: 6, message: 'Building Excel compliance matrix...' });
+          const excelBuffer = await generateExcel(crossRefReqs, crossRefs, {
+            totalPages: parseResult!.totalPages,
+            processingTimeMs: Date.now() - startTime,
+          });
+
+          // 12. Log metadata to shred_log
+          const obligationCounts = countObligations(crossRefReqs);
+          const processingTimeMs = Date.now() - startTime;
+
+          await supabase.from('shred_log').insert({
+            user_id: user.id,
+            page_count: parseResult!.totalPages,
+            requirement_count: crossRefReqs.length,
+            obligation_breakdown: obligationCounts,
+            processing_time_ms: processingTimeMs,
+            status: 'success',
+          });
+
+          // Increment trial usage if applicable
+          if (isTrial) {
+            await supabase
+              .from('profiles')
+              .update({ trial_shreds_used: profile.trial_shreds_used + 1 })
+              .eq('id', user.id);
+
+            // Send trial completion email with stats
+            const firstName = user.user_metadata?.full_name?.split(' ')[0] || 'there';
+            sendEmailAsync({
+              to: user.email!,
+              type: 'trial_completion',
+              data: {
+                first_name: firstName,
+                requirement_count: crossRefReqs.length,
+                shall_count: (obligationCounts.shall || 0) + (obligationCounts.must || 0),
+                page_count: parseResult?.totalPages ?? 0,
+                processing_time_seconds: Math.round(processingTimeMs / 1000),
+              },
+            });
+          }
+
+          // ZERO RETENTION: purge all document content
+          parseResult = null;
+
+          // Encode excel and send complete event
+          const excelBase64 = Buffer.from(excelBuffer).toString('base64');
+          sendEvent({ type: 'complete', excelBase64 });
+          clearInterval(heartbeatInterval);
+          controller.close();
+
+        } catch (streamError: unknown) {
+          console.error("Stream processing error:", streamError);
+          const errorCode = streamError instanceof Error && 'code' in (streamError as { code?: string })
+            ? (streamError as { code?: string }).code || 'INTERNAL_ERROR'
+            : 'INTERNAL_ERROR';
+          const errorMessage = streamError instanceof Error
+            ? streamError.message
+            : 'An unexpected error occurred during processing';
+
+          sendEvent({ type: 'error', error: { code: errorCode, message: errorMessage } });
+          clearInterval(heartbeatInterval);
+          controller.close();
+        }
+      }
     });
 
-    // 12. Log metadata to shred_log (NEVER log document content)
-    const obligationCounts = countObligations(crossRefReqs);
-    const processingTimeMs = Date.now() - startTime;
-
-    await supabase.from('shred_log').insert({
-      user_id: user.id,
-      page_count: parseResult.totalPages,
-      requirement_count: crossRefReqs.length,
-      obligation_breakdown: obligationCounts,
-      processing_time_ms: processingTimeMs,
-      status: 'success',
-    });
-
-    // Increment trial usage if applicable
-    if (isTrial) {
-      await supabase
-        .from('profiles')
-        .update({ trial_shreds_used: profile.trial_shreds_used + 1 })
-        .eq('id', user.id);
-
-      // Send trial completion email with stats (fire-and-forget)
-      const firstName = user.user_metadata?.full_name?.split(' ')[0] || 'there';
-      sendEmailAsync({
-        to: user.email!,
-        type: 'trial_completion',
-        data: {
-          first_name: firstName,
-          requirement_count: crossRefReqs.length,
-          shall_count: (obligationCounts.shall || 0) + (obligationCounts.must || 0),
-          page_count: parseResult?.totalPages ?? 0,
-          processing_time_seconds: Math.round(processingTimeMs / 1000),
-        },
-      });
-    }
-
-    // ZERO RETENTION: purge all document content
-    parseResult = null;
-
-    // 13. Return Excel file
-    return new NextResponse(new Uint8Array(excelBuffer), {
+    return new NextResponse(stream, {
       status: 200,
       headers: {
-        'Content-Type': 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
-        'Content-Disposition': 'attachment; filename="compliance-matrix.xlsx"',
-        'Content-Length': String(excelBuffer.length),
-        'Cache-Control': 'no-store',
+        'Content-Type': 'application/x-ndjson',
+        'Cache-Control': 'no-store, no-transform',
+        'Connection': 'keep-alive',
       },
     });
   } catch (error) {

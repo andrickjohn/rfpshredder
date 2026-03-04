@@ -5,7 +5,7 @@
 
 // eslint-disable-next-line @typescript-eslint/no-require-imports
 const pdfParse = require('pdf-parse');
-import { ParseResult, ParsedPage, MAX_PAGE_COUNT } from './types';
+import { ParseResult, ParsedPage } from './types';
 
 /**
  * Parse a PDF buffer into structured text with page numbers.
@@ -17,8 +17,8 @@ import { ParseResult, ParsedPage, MAX_PAGE_COUNT } from './types';
  */
 export async function parsePDF(buffer: Buffer): Promise<ParseResult> {
   const data = await pdfParse(buffer, {
-    // Return max pages + 1 to detect over-limit
-    max: MAX_PAGE_COUNT + 1,
+    // We lift the max limit slightly for superusers in API, but pdfParse requires a hard limit
+    max: 3000 + 1,
   });
 
   // Check for empty PDF
@@ -29,13 +29,8 @@ export async function parsePDF(buffer: Buffer): Promise<ParseResult> {
     );
   }
 
-  // Check page limit
-  if (data.numpages > MAX_PAGE_COUNT) {
-    throw new PdfParseError(
-      `The PDF exceeds the ${MAX_PAGE_COUNT}-page limit (${data.numpages} pages). Please split the document and upload Section L/M separately.`,
-      'PAGE_LIMIT_EXCEEDED'
-    );
-  }
+  // We removed the throw here. Page limits are now strictly enforced in `api/shred/route.ts` 
+  // so that superusers can bypass the 300 page limit (up to 1000 pages).
 
   // Check for scanned PDF (no extractable text)
   const trimmedText = data.text.trim();
