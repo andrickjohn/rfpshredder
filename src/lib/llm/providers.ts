@@ -29,7 +29,14 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
  */
 export function getLLMProvider(modelName: string) {
     if (modelName.startsWith('claude')) {
-        return anthropic(modelName);
+        // Automatically map to stable versions for accounts that don't have access to 20241022 yet
+        let actualModelName = modelName;
+        if (modelName === 'claude-3-5-haiku-20241022') {
+            actualModelName = 'claude-3-haiku-20240307';
+        } else if (modelName === 'claude-3-5-sonnet-20241022') {
+            actualModelName = 'claude-3-5-sonnet-20240620';
+        }
+        return anthropic(actualModelName);
     }
 
     if (modelName.startsWith('gpt')) {
@@ -44,7 +51,7 @@ export function getLLMProvider(modelName: string) {
     }
 
     // Fallback
-    return anthropic('claude-3-5-haiku-20241022');
+    return anthropic('claude-3-haiku-20240307');
 }
 
 /**
