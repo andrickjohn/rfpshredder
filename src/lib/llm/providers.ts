@@ -11,6 +11,7 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
     // Claude models
     'claude-3-5-haiku-20241022': { input: 0.25, output: 1.25 },
     'claude-3-5-sonnet-20241022': { input: 3.00, output: 15.00 },
+    'claude-3-5-sonnet-20240620': { input: 3.00, output: 15.00 },
     'claude-3-haiku-20240307': { input: 0.25, output: 1.25 },
 
     // OpenAI models

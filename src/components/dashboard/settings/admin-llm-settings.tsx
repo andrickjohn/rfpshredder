@@ -17,7 +17,9 @@ export function AdminLLMSettings({ currentModel }: AdminLLMSettingsProps) {
 
     const models = [
         { value: 'claude-3-5-haiku-20241022', label: 'Claude 3.5 Haiku' },
+        { value: 'claude-3-haiku-20240307', label: 'Claude 3 Haiku (Stable)' },
         { value: 'claude-3-5-sonnet-20241022', label: 'Claude 3.5 Sonnet' },
+        { value: 'claude-3-5-sonnet-20240620', label: 'Claude 3.5 Sonnet (Stable)' },
         { value: 'gpt-4o', label: 'GPT-4o' },
         { value: 'gpt-4o-mini', label: 'GPT-4o-mini' },
         { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },

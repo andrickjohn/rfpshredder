@@ -64,7 +64,7 @@ export async function POST(request: Request) {
       );
     }
 
-    const { preferred_llm_model: preferredModel = 'claude-3-5-haiku-20241022' } = profile;
+    const { preferred_llm_model: preferredModel = 'claude-3-haiku-20240307' } = profile;
 
     const isSuperAdmin = profile.email === 'admin@automatemomentum.com';
     const isTrial = profile.subscription_status === 'trial';

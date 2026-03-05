@@ -179,64 +179,67 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
 
           for (const line of lines) {
             if (!line.trim()) continue;
+
+            let event: { type?: string; error?: { message?: string }; step?: number; message?: string; current?: number; total?: number; percentage?: number; runningCost?: number; modelName?: string; excelBase64?: string };
             try {
-              const event = JSON.parse(line);
-
-              // Watchdog reset on ANY network activity (ping, progress, etc)
-              lastActivityTimeRef.current = Date.now();
-
-              if (event.type === 'error') {
-                throw new Error(event.error?.message || 'Server processing error');
-              } else if (event.type === 'progress') {
-                if (event.step) setCurrentStep(event.step);
-                if (event.message) {
-                  setProgress(event.message);
-                  if (event.step) setStepMessage(event.step, event.message);
-                }
-                if (typeof event.current === 'number' && typeof event.total === 'number' && event.total > 0) {
-                  setProgressPercentage(Math.round((event.current / event.total) * 100));
-                } else if (typeof event.percentage === 'number') {
-                  setProgressPercentage(event.percentage);
-                }
-                if (event.runningCost !== undefined) setRunningCost(event.runningCost);
-                if (event.modelName !== undefined) setModelName(event.modelName);
-              } else if (event.type === 'complete') {
-                isComplete = true;
-                // Step 7: Download
-                setCurrentStep(7);
-                setProgressPercentage(100);
-                setProgress('Downloading compliance matrix...');
-                setStepMessage(7, 'Compliance matrix ready');
-
-                // Decode base64 to blob
-                const byteCharacters = atob(event.excelBase64);
-                const byteNumbers = new Array(byteCharacters.length);
-                for (let i = 0; i < byteCharacters.length; i++) {
-                  byteNumbers[i] = byteCharacters.charCodeAt(i);
-                }
-                const byteArray = new Uint8Array(byteNumbers);
-                const blob = new Blob([byteArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
-
-                const url = URL.createObjectURL(blob);
-                setExcelUrl(url);
-
-                // Auto-download helper
-                const a = document.createElement('a');
-                a.href = url;
-                a.download = 'compliance-matrix.xlsx';
-                document.body.appendChild(a);
-                a.click();
-                document.body.removeChild(a);
-
-                // Complete - all steps done
-                setCurrentStep(8);
-                setStatus('success');
-                setProgress('');
-                setCancelController(null);
-                // Intentionally removed URL.revokeObjectURL and the 3s reset so user can hit Download manually if blocked
-              }
+              event = JSON.parse(line);
             } catch (e) {
               console.warn('Failed to parse NDJSON line:', line, e);
+              continue; // Skip this malformed line but keep reading stream
+            }
+
+            // Watchdog reset on ANY network activity (ping, progress, etc)
+            lastActivityTimeRef.current = Date.now();
+
+            if (event.type === 'error') {
+              throw new Error(event.error?.message || 'Server processing error');
+            } else if (event.type === 'progress') {
+              if (event.step) setCurrentStep(event.step);
+              if (event.message) {
+                setProgress(event.message);
+                if (event.step) setStepMessage(event.step, event.message);
+              }
+              if (typeof event.current === 'number' && typeof event.total === 'number' && event.total > 0) {
+                setProgressPercentage(Math.round((event.current / event.total) * 100));
+              } else if (typeof event.percentage === 'number') {
+                setProgressPercentage(event.percentage);
+              }
+              if (event.runningCost !== undefined) setRunningCost(event.runningCost);
+              if (event.modelName !== undefined) setModelName(event.modelName);
+            } else if (event.type === 'complete') {
+              isComplete = true;
+              // Step 7: Download
+              setCurrentStep(7);
+              setProgressPercentage(100);
+              setProgress('Downloading compliance matrix...');
+              setStepMessage(7, 'Compliance matrix ready');
+
+              // Decode base64 to blob
+              const byteCharacters = atob(event.excelBase64 || '');
+              const byteNumbers = new Array(byteCharacters.length);
+              for (let i = 0; i < byteCharacters.length; i++) {
+                byteNumbers[i] = byteCharacters.charCodeAt(i);
+              }
+              const byteArray = new Uint8Array(byteNumbers);
+              const blob = new Blob([byteArray], { type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet' });
+
+              const url = URL.createObjectURL(blob);
+              setExcelUrl(url);
+
+              // Auto-download helper
+              const a = document.createElement('a');
+              a.href = url;
+              a.download = 'compliance-matrix.xlsx';
+              document.body.appendChild(a);
+              a.click();
+              document.body.removeChild(a);
+
+              // Complete - all steps done
+              setCurrentStep(8);
+              setStatus('success');
+              setProgress('');
+              setCancelController(null);
+              // Intentionally removed URL.revokeObjectURL and the 3s reset so user can hit Download manually if blocked
             }
           } // closes for (const line of lines)
 
