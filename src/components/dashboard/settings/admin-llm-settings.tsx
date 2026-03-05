@@ -22,10 +22,16 @@ export function AdminLLMSettings({ currentModel }: AdminLLMSettingsProps) {
         { value: 'claude-3-5-sonnet-20240620', label: 'Claude 3.5 Sonnet (Stable)' },
         { value: 'gpt-4o', label: 'GPT-4o' },
         { value: 'gpt-4o-mini', label: 'GPT-4o-mini' },
+        { value: 'gemini-3.1-pro-preview', label: 'Gemini 3.1 Pro Preview' },
+        { value: 'gemini-3.1-pro-preview-thinking', label: 'Gemini 3.1 Pro (Thinking)' },
+        { value: 'gemini-3.1-flash-lite-preview', label: 'Gemini 3.1 Flash Lite Preview' },
+        { value: 'gemini-3.1-flash-lite-preview-thinking', label: 'Gemini 3.1 Flash Lite (Thinking)' },
+        { value: 'gemini-3-pro-preview', label: 'Gemini 3 Pro Preview' },
+        { value: 'gemini-3-pro-preview-thinking', label: 'Gemini 3 Pro (Thinking)' },
+        { value: 'gemini-3-flash-preview', label: 'Gemini 3 Flash Preview' },
+        { value: 'gemini-3-flash-preview-thinking', label: 'Gemini 3 Flash (Thinking)' },
         { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
         { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
-        { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
-        { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
     ];
 
     async function handleSave() {
