@@ -238,7 +238,8 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
             } catch (e) {
               console.warn('Failed to parse NDJSON line:', line, e);
             }
-          }
+          } // closes for (const line of lines)
+
           if (done) {
             // Process any trailing data in the buffer
             if (buffer.trim()) {
@@ -288,6 +289,14 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
             break;
           }
         } // closes if (value)
+
+        // Ensure done is evaluated even if value is falsy
+        if (done && !value) {
+          if (!isComplete && !cancelController?.signal.aborted) {
+            throw new Error('Connection closed by server prematurely without complete event.');
+          }
+          break;
+        }
       } // closes while (true)
     } catch (err) {
       if (err instanceof Error && err.name === 'AbortError') {
