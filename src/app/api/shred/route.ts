@@ -27,6 +27,7 @@ export async function POST(request: Request) {
 
   // Mutable references for zero-retention cleanup
   let fileBuffer: Buffer | null = null;
+  let cachedTotalPages = 0; // Detached memory cache for telemetry
   let parseResult: ParseResult | null = null;
 
   try {
@@ -142,20 +143,20 @@ export async function POST(request: Request) {
     fileBuffer = null;
 
     // PAGE LIMIT ENFORCEMENT
-    const totalPages = parseResult.totalPages;
+    cachedTotalPages = parseResult.totalPages;
     if (isSuperAdmin) {
-      if (totalPages > 3000) {
+      if (cachedTotalPages > 3000) {
         parseResult = null;
         return NextResponse.json(
-          { error: { code: 'PAGE_LIMIT_EXCEEDED', message: `Even as an Admin, documents are capped at 3000 pages. This document is ${totalPages} pages. Please split it.` } },
+          { error: { code: 'PAGE_LIMIT_EXCEEDED', message: `Even as an Admin, documents are capped at 3000 pages. This document is ${cachedTotalPages} pages. Please split it.` } },
           { status: 400 }
         );
       }
     } else {
-      if (tier === 'solo' && totalPages > 300) {
+      if (tier === 'solo' && cachedTotalPages > 300) {
         parseResult = null;
         return NextResponse.json(
-          { error: { code: 'PAGE_LIMIT_EXCEEDED', message: `The Solo plan allows up to 300 pages per document. This document is ${totalPages} pages. Please upgrade to process larger files.` } },
+          { error: { code: 'PAGE_LIMIT_EXCEEDED', message: `The Solo plan allows up to 300 pages per document. This document is ${cachedTotalPages} pages. Please upgrade to process larger files.` } },
           { status: 400 }
         );
       }
@@ -166,20 +167,18 @@ export async function POST(request: Request) {
     const sections = detectSections(parseResult.pages);
 
     if (!sections.sectionL && !sections.sectionM) {
-      // Purge parse result
-      const totalPages = parseResult.totalPages;
-      parseResult = null;
-      return NextResponse.json(
-        {
-          error: {
-            code: 'SECTIONS_NOT_FOUND',
-            message: 'Could not find Section L (Instructions) or Section M (Evaluation Criteria) in this document. Please ensure this is a standard federal RFP.',
-          },
-          warnings: sections.warnings,
-          metadata: { totalPages },
-        },
-        { status: 422 }
-      );
+      // UX Fallback: If strict headers were completely missed in a document solely named for the section,
+      // fallback to scanning the entire document context.
+      sections.sectionL = {
+        type: 'L',
+        title: 'Full Document Fallback',
+        reference: 'Entire Document',
+        startPage: 1,
+        endPage: cachedTotalPages,
+        text: parseResult.fullText
+      };
+      if (!sections.warnings) sections.warnings = [];
+      sections.warnings.push("Explicit Section L & M headers could not be found. Defaulting to a full-document contextual scan.");
     }
 
     // Stream Processing
@@ -201,7 +200,14 @@ export async function POST(request: Request) {
 
         try {
           // 8. Chunk text
-          sendEvent({ type: 'progress', step: 2, message: `Parsing document structure (${parseResult!.totalPages} pages)...` });
+          sendEvent({ type: 'progress', step: 2, message: `Parsing document structure (${cachedTotalPages} pages)...` });
+
+          if (sections.warnings && sections.warnings.length > 0) {
+            sections.warnings.forEach(msg => {
+              sendEvent({ type: 'progress', step: 2, message: `Warning: ${msg}` });
+            });
+          }
+
           const chunks = chunkText(parseResult!.pages);
 
           // 9. Extract requirements via LLM
@@ -231,7 +237,7 @@ export async function POST(request: Request) {
           // 11. Generate Excel
           sendEvent({ type: 'progress', step: 6, message: 'Building Excel compliance matrix...', runningCost: totalCost, modelName: preferredModel });
           const excelBuffer = await generateExcel(crossRefReqs, crossRefs, {
-            totalPages: parseResult!.totalPages,
+            totalPages: cachedTotalPages,
             processingTimeMs: Date.now() - startTime,
           });
 
@@ -241,7 +247,7 @@ export async function POST(request: Request) {
 
           await supabase.from('shred_log').insert({
             user_id: user.id,
-            page_count: parseResult!.totalPages,
+            page_count: cachedTotalPages,
             requirement_count: crossRefReqs.length,
             obligation_breakdown: obligationCounts,
             processing_time_ms: processingTimeMs,
@@ -264,7 +270,7 @@ export async function POST(request: Request) {
                 first_name: firstName,
                 requirement_count: crossRefReqs.length,
                 shall_count: (obligationCounts.shall || 0) + (obligationCounts.must || 0),
-                page_count: parseResult?.totalPages ?? 0,
+                page_count: cachedTotalPages,
                 processing_time_seconds: Math.round(processingTimeMs / 1000),
               },
             });
@@ -320,20 +326,21 @@ export async function POST(request: Request) {
       if (user) {
         await supabase.from('shred_log').insert({
           user_id: user.id,
-          page_count: parseResult?.totalPages ?? 0,
+          page_count: cachedTotalPages, // Safely rely on the disconnected memory cache
           requirement_count: 0,
           obligation_breakdown: {},
           processing_time_ms: processingTimeMs,
-          status: 'failed',
+          status: 'error',
+          error_message: errorMessage,
         });
       }
-    } catch {
-      // Failure logging itself failed — swallow silently
+    } catch (logError) {
+      console.error("Failed to log shredding error to Supabase:", logError);
     }
 
     return NextResponse.json(
       { error: { code: errorCode, message: errorMessage } },
-      { status: errorCode === 'SECTIONS_NOT_FOUND' ? 422 : 500 }
+      { status: 500 }
     );
   } finally {
     // ZERO RETENTION: ensure all document content is purged
