@@ -70,8 +70,8 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
         const now = Date.now();
         const elapsedSecs = Math.floor((now - startTimeRef.current) / 1000);
 
-        // 1. Stuck Detection (15s timeout)
-        if (now - lastActivityTimeRef.current > 15000) {
+        // 1. Stuck Detection (60s timeout)
+        if (now - lastActivityTimeRef.current > 60000) {
           setIsStuck(true);
         } else {
           setIsStuck(false);
@@ -427,9 +427,13 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z" />
                 </svg>
                 Elapsed: {formatTime(elapsedTime)}
-                {etaTime !== null && ` | ETA: ~${formatTime(etaTime)}`}
-                {isSuperAdmin && modelName && ` | Model: ${modelName}`}
-                {isSuperAdmin && runningCost > 0 && ` | Cost: $${runningCost.toFixed(3)}`}
+                {isSuperAdmin && (
+                  <>
+                    {' | ETA: ~'}{etaTime !== null ? formatTime(etaTime) : 'Calculating...'}
+                    {modelName && ` | Model: ${modelName}`}
+                    {runningCost !== null && ` | Cost: $${runningCost.toFixed(3)}`}
+                  </>
+                )}
               </span>
             </div>
           </div>
@@ -450,7 +454,7 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
             </svg>
             Process appears stuck
           </div>
-          The server hasn&apos;t responded in over 15 seconds. If this is a very large document, it may occasionally pause during intensive extraction. You can continue waiting, or hit Cancel above to try again.
+          The server hasn&apos;t responded in over 60 seconds. If this is a very large document, it may occasionally pause during intensive extraction. You can continue waiting, or hit Cancel above to try again.
         </div>
       )}
 
