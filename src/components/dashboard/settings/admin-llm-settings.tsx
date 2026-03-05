@@ -22,9 +22,10 @@ export function AdminLLMSettings({ currentModel }: AdminLLMSettingsProps) {
         { value: 'claude-3-5-sonnet-20240620', label: 'Claude 3.5 Sonnet (Stable)' },
         { value: 'gpt-4o', label: 'GPT-4o' },
         { value: 'gpt-4o-mini', label: 'GPT-4o-mini' },
+        { value: 'gemini-2.5-pro', label: 'Gemini 2.5 Pro' },
+        { value: 'gemini-2.5-flash', label: 'Gemini 2.5 Flash' },
         { value: 'gemini-1.5-pro', label: 'Gemini 1.5 Pro' },
         { value: 'gemini-1.5-flash', label: 'Gemini 1.5 Flash' },
-        { value: 'gemini-3.1-pro', label: 'Gemini 3.1 Pro (Requested)' },
     ];
 
     async function handleSave() {

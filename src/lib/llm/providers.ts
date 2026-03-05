@@ -19,9 +19,10 @@ export const MODEL_PRICING: Record<string, { input: number; output: number }> = 
     'gpt-4o-mini': { input: 0.15, output: 0.60 },
 
     // Gemini models
+    'gemini-2.5-pro': { input: 2.50, output: 10.00 },
+    'gemini-2.5-flash': { input: 0.15, output: 0.60 },
     'gemini-1.5-pro': { input: 1.25, output: 5.00 },
     'gemini-1.5-flash': { input: 0.075, output: 0.30 },
-    'gemini-3.1-pro': { input: 1.25, output: 5.00 }, // User requested string, assumed same pricing as 1.5 Pro
 };
 
 /**
@@ -44,10 +45,7 @@ export function getLLMProvider(modelName: string) {
     }
 
     if (modelName.startsWith('gemini')) {
-        // Map the user requested 'gemini-3.1-pro' to the latest available model if it doesn't exist,
-        // or keep it if Google actually released it.
-        const actualModelName = modelName === 'gemini-3.1-pro' ? 'gemini-1.5-pro-latest' : modelName;
-        return google(actualModelName);
+        return google(modelName);
     }
 
     // Fallback
@@ -70,6 +68,8 @@ export function calculateCost(modelName: string, promptTokens: number, completio
         else if (customModelName.includes('sonnet')) pricing = MODEL_PRICING['claude-3-5-sonnet-20241022'];
         else if (customModelName.includes('mini')) pricing = MODEL_PRICING['gpt-4o-mini'];
         else if (customModelName.includes('gpt-4o')) pricing = MODEL_PRICING['gpt-4o'];
+        else if (customModelName.includes('gemini') && customModelName.includes('2.5') && customModelName.includes('pro')) pricing = MODEL_PRICING['gemini-2.5-pro'];
+        else if (customModelName.includes('gemini') && customModelName.includes('2.5') && customModelName.includes('flash')) pricing = MODEL_PRICING['gemini-2.5-flash'];
         else if (customModelName.includes('gemini-1.5-flash')) pricing = MODEL_PRICING['gemini-1.5-flash'];
         else if (customModelName.includes('gemini') && customModelName.includes('pro')) pricing = MODEL_PRICING['gemini-1.5-pro'];
         else pricing = MODEL_PRICING['claude-3-5-haiku-20241022']; // Default fallback
