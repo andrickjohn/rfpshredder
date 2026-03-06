@@ -1,3 +1,15 @@
-Let me know what you want to tackle next! I have successfully implemented the dynamic LLM selection functionality for Super Admins in the dashboard, complete with live stream cost reporting. All items have been safely pushed to `main` on GitHub and the production build has been verified. 
+From: John (session ending 2026-03-06 ~06:36 HST)
+To: Next session
 
-Whenever you are ready to resume, just mention this file or send a regular message!
+Column G (Response Strategy) still had some blank entries in the shredded Excel even after the fix.
+
+The LLM is now ASKED for responseStrategy, but some Section L requirements are still coming back with empty strings — likely because:
+- The LLM returned empty string for certain requirement types (e.g. boilerplate formatting instructions, certifications fill-ins, or cross-references)
+- Some chunks may still be classified as sectionType 'none' and skipped entirely
+- The responseStrategy fallback for missing values is just '' with no default
+
+NEXT SESSION TODO:
+1. Investigate which categories of Section L requirements are getting blank G values (look at the raw LLM JSON response for those rows)
+2. Add a fallback: if responseStrategy comes back empty from LLM, generate a default strategy based on the obligation level and requirement text pattern (e.g. "Address this requirement directly in the Technical Volume, Section [X]")
+3. Consider making the extraction prompt more assertive: "You MUST provide a responseStrategy for EVERY Section L item. Never return empty string."
+4. Test with multiple real SAM.gov RFPs from samples/sam_rfps/actuals/ to confirm G is fully populated
