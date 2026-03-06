@@ -1,8 +1,8 @@
 # RFP Shredder — Build Progress
 
-Last updated: 2026-02-22
-Current phase: Phase 8 COMPLETE — LAUNCH READY
-Session number: 4
+Last updated: 2026-03-05
+Current phase: Phase 9 — Test Corpus Expansion & Engine Hardening
+Session number: 9
 
 ## Phase 1: Foundation — COMPLETE
 - [x] All items completed
@@ -78,9 +78,9 @@ Session number: 4
 - [x] VERIFIED: All Phase 8 gates passed
 
 ## Self-Annealing Status
-- Total lessons logged: 7
-- Self-review cycles completed: 8
-- Proactive refactors from lessons: 1
+- Total lessons logged: 10
+- Self-review cycles completed: 9
+- Proactive refactors from lessons: 2
 
 ## Notes
 - pdf-parse requires `require()` not ESM import in Next.js (Lesson 4)
@@ -88,3 +88,15 @@ Session number: 4
 - Excel output: 8 columns, obligation colors, frozen header, auto-filter, compliance dropdown, metadata footer, AI disclaimer
 - Cross-ref: 3 strategies (explicit M reference, section alignment, keyword similarity)
 - Trial users get 1 free shred before subscription required
+- SAM.gov API scraper lives in `fetch_10_rfps.ts` — uses exponential backoff, Fisher-Yates shuffle, seen_solicitations.json ledger
+
+## Phase 9: Test Corpus Expansion & Engine Hardening — IN PROGRESS
+- [x] Fixed crash: `totalPages` null pointer in error telemetry (`cachedTotalPages` introduced)
+- [x] Fixed crash: Section detection rejection for non-standard RFPs → Full Document Fallback added
+- [x] Gemini model support: added gemini-2.5-pro-preview, gemini-2.5-flash-preview, thinking_config option
+- [x] PM2 auto-restart awareness: agent now detects when changes crash the server
+- [x] Built SAM.gov API scraper (`fetch_10_rfps.ts`) with rate-limit backoff + diversity shuffle
+- [x] Collected 50+ authentic Section L/M RFPs into `samples/sam_rfps/actuals/`
+- [x] Learned & documented SAM.gov extraction architecture in LESSONS.md
+- [ ] Run full shred pipeline against the new sample corpus — verify no new crashes
+- [ ] Consider adding a "samples" admin UI to trigger test shreds from the corpus

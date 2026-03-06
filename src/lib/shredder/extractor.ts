@@ -200,15 +200,18 @@ function normalizeRequirement(
     : classifyObligation(raw.requirementText);
 
   // Build eval factor mapping
+  // Priority: M req uses evalFactor directly; L req uses evalFactorHint from LLM
+  // (crossref may later overwrite with a higher-confidence match)
   let evalFactorMapping = '';
   if (isM && raw.evalFactor) {
     evalFactorMapping = raw.evalFactor;
   } else if (isM && raw.rfpSection) {
     evalFactorMapping = raw.rfpSection;
-  } else if (!isM && sectionM) {
-    // For L requirements, leave eval factor empty — cross-ref fills it in Phase 4
-    evalFactorMapping = '';
+  } else if (!isM && raw.evalFactorHint?.trim()) {
+    // LLM identified a likely Section M factor — use it as a placeholder
+    evalFactorMapping = raw.evalFactorHint.trim();
   }
+  // If still empty for L reqs, crossref.ts will fill it in with structural matching
 
   return {
     id,
@@ -217,7 +220,7 @@ function normalizeRequirement(
     requirementText: raw.requirementText.trim(),
     obligationLevel: obligation,
     evalFactorMapping,
-    responseStrategy: '',
+    responseStrategy: raw.responseStrategy?.trim() || '',
     complianceStatus: '',
   };
 }

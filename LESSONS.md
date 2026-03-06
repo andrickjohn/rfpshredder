@@ -88,3 +88,25 @@
 - **Fix applied**: Checked `usage.inputTokens` and `usage.outputTokens` for `undefined` before performing operations and extracting cost metrics.
 - **Prevention rule**: Always double check typing signatures in newer versions of the `ai` npm package, specifically `LanguageModelUsage`, instead of relying on standard raw provider (e.g., Anthropic, OpenAI) parameter names when wrapping LLM interactions.
 - **Applies to**: Vercel `ai` SDK usage anywhere in the codebase.
+
+---
+
+## Lesson 9: Nullifying parseResult before error logging causes secondary crash
+- **Date**: 2026-03-05
+- **Component**: `src/app/api/shred/route.ts`
+- **What happened**: The shred route set `parseResult = null` to free heap memory after section detection errors, then the outer `catch` block tried to log `parseResult?.totalPages` — crashing with `Cannot read properties of null`.
+- **Root cause**: Defensive memory cleanup (`parseResult = null`) happened before all downstream references (including telemetry) were satisfied.
+- **Fix applied**: Introduced `cachedTotalPages` variable that captures `parseResult.totalPages` immediately after parsing, before any null assignments. All downstream references now use `cachedTotalPages`.
+- **Prevention rule**: Cache any value you need in telemetry/error-paths before nullifying the parent object for GC. Pattern: `const cachedX = obj.x; obj = null;` not `obj = null; log(obj?.x)`.
+- **Applies to**: Any route handler that nullifies large objects mid-pipeline.
+
+---
+
+## Lesson 10: SAM.gov PDF Extraction Architecture
+- **Date**: 2026-03-05
+- **Component**: `fetch_10_rfps.ts` / SAM.gov data acquisition
+- **What happened**: Needed authentic Section L/M RFPs for test corpus. Multiple approaches tried before finding the reliable path.
+- **Root cause (of friction)**: SAM.gov's SPA navigation causes Puppeteer "Execution Context destroyed" errors. Their frontend API requires undocumented session tokens. The official API key has aggressive 429 rate limits (~50-100 requests).
+- **Fix applied**: Official `api.sam.gov/opportunities/v2/search` with exponential backoff (5s, 10s, 20s...), Fisher-Yates shuffle on candidate array for diversity, `seen_solicitations.json` ledger to skip previously probed notices, and in-memory `pdf-parse` validation before writing to disk.
+- **Prevention rule**: When scraping SAM.gov: (1) use the official API key endpoint, not the frontend; (2) always shuffle results before iterating to avoid agency-clustering; (3) validate PDFs in-memory before saving; (4) maintain a dedup ledger across runs.
+- **Applies to**: `fetch_10_rfps.ts`, any future SAM.gov data ingestion scripts.

@@ -14,6 +14,8 @@ You must identify:
 2. The obligation level (shall, must, should, may, will, "is required to", "is expected to")
 3. The RFP section reference (e.g., L.4.3.2, M.2.1)
 4. The page number where the requirement appears
+5. A brief response strategy for Section L requirements
+6. The relevant Section M evaluation factor for Section L requirements (if identifiable)
 
 CRITICAL RULES:
 - Extract EVERY requirement, no matter how minor. Missing a requirement could cost a contractor the award.
@@ -43,6 +45,14 @@ export function buildExtractionPrompt(
         ? 'This text is from Section M (Evaluation Criteria). Focus on extracting evaluation factors and scoring criteria.'
         : 'This text contains both Section L and Section M content. Extract requirements from both sections.';
 
+  const hasL = sectionType === 'L' || sectionType === 'both';
+
+  const lSpecificFields = hasL
+    ? `- "evalFactorHint": for Section L only — if this requirement clearly supports a specific Section M evaluation factor (e.g., "Technical Approach", "Past Performance", "Key Personnel", "Management Approach"), name it briefly. If not identifiable, use empty string.
+- "responseStrategy": for Section L only — write ONE concise sentence (max 20 words) describing what the offeror must address in their proposal response to satisfy this requirement. For Section M items, use empty string.`
+    : `- "evalFactorHint": empty string
+- "responseStrategy": empty string`;
+
   return `${sectionContext}
 
 Extract every requirement from the following RFP text. Return a JSON array where each element has:
@@ -51,14 +61,15 @@ Extract every requirement from the following RFP text. Return a JSON array where
 - "requirementText": the full requirement statement
 - "obligationLevel": one of "shall", "must", "should", "may", "will", "is required to", "is expected to"
 - "evalFactor": for Section M only, the evaluation factor name (empty string for Section L)
+${lSpecificFields}
 
 RFP TEXT:
 ${chunkText}`;
 }
 
 /**
- * Shape of a single requirement as returned by Claude API.
- * This matches the JSON structure we ask Claude to produce.
+ * Shape of a single requirement as returned by the LLM.
+ * This matches the JSON structure we ask the model to produce.
  */
 export interface RawExtractedRequirement {
   rfpSection: string;
@@ -66,4 +77,6 @@ export interface RawExtractedRequirement {
   requirementText: string;
   obligationLevel: string;
   evalFactor: string;
+  evalFactorHint: string;
+  responseStrategy: string;
 }

@@ -103,7 +103,7 @@ function findBestMMatch(
     // Strategy 3: Keyword similarity
     const keywordScore = checkKeywordSimilarity(lReq.requirementText, mReq.requirementText);
     score += keywordScore;
-    if (keywordScore > 0.3 && confidence === 'low') {
+    if (keywordScore > 0.15 && confidence === 'low') {
       confidence = 'medium';
     }
 
@@ -199,6 +199,7 @@ const STOP_WORDS = new Set([
   'from', 'that', 'this', 'with', 'they', 'been', 'will',
   'each', 'make', 'like', 'into', 'than', 'them', 'then',
   'also', 'just', 'over', 'such', 'more', 'some', 'very',
-  'shall', 'must', 'should', 'may', 'will', 'would', 'could',
-  'offeror', 'contractor', 'government', 'proposal', 'required',
+  // Note: deliberately NOT removing govcon domain words like 'offeror',
+  // 'contractor', 'proposal', 'required', 'shall', 'must' — these are
+  // meaningful linking signals between Section L and Section M text.
 ]);
