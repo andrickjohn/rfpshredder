@@ -110,3 +110,14 @@
 - **Fix applied**: Official `api.sam.gov/opportunities/v2/search` with exponential backoff (5s, 10s, 20s...), Fisher-Yates shuffle on candidate array for diversity, `seen_solicitations.json` ledger to skip previously probed notices, and in-memory `pdf-parse` validation before writing to disk.
 - **Prevention rule**: When scraping SAM.gov: (1) use the official API key endpoint, not the frontend; (2) always shuffle results before iterating to avoid agency-clustering; (3) validate PDFs in-memory before saving; (4) maintain a dedup ledger across runs.
 - **Applies to**: `fetch_10_rfps.ts`, any future SAM.gov data ingestion scripts.
+
+---
+
+## Lesson 11: Programmatic Visual Verification for UI State
+- **Date**: 2026-03-18
+- **Component**: Frontend UI / Verification
+- **What happened**: Assumed an "Admin Bypass" feature worked because the underlying code (boolean override) was correct. Failed to verify that a separate component (`SubscriptionStatus`) was still visually blocking and displaying incorrect state ("Free Trial").
+- **Root cause**: Relied solely on code compilation/logic and the slow `browser_subagent` was bypassed for speed rather than confirming the final visual render.
+- **Fix applied**: Established a strict testing hierarchy favoring fast, headless Playwright/Vitest assertions over slow visual agents.
+- **Prevention rule**: Never declare visual or UI-related tasks complete based on code compilation alone. Always use programmatic testing (Playwright for E2E, Vitest for components) to assert the final DOM state instantly in the terminal.
+- **Applies to**: All frontend and UI tasks.

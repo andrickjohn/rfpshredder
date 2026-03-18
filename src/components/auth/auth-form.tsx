@@ -154,10 +154,24 @@ export function AuthForm({ mode }: AuthFormProps) {
       {process.env.NODE_ENV === 'development' && mode === 'login' && (
         <button
           type="button"
-          onClick={() => {
+          onClick={async (e) => {
+            e.preventDefault();
+            setEmail('admin@automatemomentum.com');
+            setPassword('password123');
             setLoading(true);
-            console.warn("Emulating headless admin auth bypass natively.");
-            document.cookie = "sb-dev-bypass-token=admin-override; path=/; max-age=3600";
+            setError(null);
+            setMessage(null);
+            const { error: signInError } = await supabase.auth.signInWithPassword({
+              email: 'admin@automatemomentum.com',
+              password: 'password123',
+            });
+            if (signInError) {
+              setError('Failed to auto-login. Supabase connection error or bad password.');
+              setLoading(false);
+              return;
+            }
+            // Clear the hacky cookie just in case it was set previously
+            document.cookie = "sb-dev-bypass-token=; path=/; expires=Thu, 01 Jan 1970 00:00:00 GMT";
             router.push('/dashboard');
             router.refresh();
           }}
