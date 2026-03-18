@@ -10,7 +10,7 @@ import { createClient } from '@/lib/supabase/client';
 import { useRouter } from 'next/navigation';
 
 interface AuthFormProps {
-  mode: 'login' | 'signup' | 'forgot-password' | 'magic-link';
+  mode: 'login' | 'signup';
 }
 
 export function AuthForm({ mode }: AuthFormProps) {
@@ -39,7 +39,11 @@ export function AuthForm({ mode }: AuthFormProps) {
           },
         });
         if (signUpError) {
-          setError(signUpError.message);
+          let errorMsg = signUpError.message;
+          if (errorMsg.toLowerCase().includes('rate limit') || errorMsg.toLowerCase().includes('already registered')) {
+             errorMsg = 'This email appears to be registered. Please try signing in instead.';
+          }
+          setError(errorMsg);
           return;
         }
         setMessage('Account created! Check your email to confirm your address, then sign in.');
@@ -54,25 +58,6 @@ export function AuthForm({ mode }: AuthFormProps) {
         }
         router.push('/dashboard');
         router.refresh();
-      } else if (mode === 'magic-link') {
-        const { error: magicError } = await supabase.auth.signInWithOtp({
-          email: email.trim().toLowerCase(),
-        });
-        if (magicError) {
-          setError('Unable to send magic link. Please try again.');
-          return;
-        }
-        setMessage('Check your email for a magic link to sign in.');
-      } else if (mode === 'forgot-password') {
-        const { error: resetError } = await supabase.auth.resetPasswordForEmail(
-          email.trim().toLowerCase(),
-          { redirectTo: `${window.location.origin}/auth/callback` }
-        );
-        if (resetError) {
-          setError('Unable to send reset email. Please try again.');
-          return;
-        }
-        setMessage('Check your email for a password reset link.');
       }
     } catch {
       setError('An unexpected error occurred. Please try again.');
@@ -158,40 +143,24 @@ export function AuthForm({ mode }: AuthFormProps) {
           ? 'Please wait...'
           : mode === 'signup'
             ? 'Create Account'
-            : mode === 'login'
-              ? 'Sign In'
-              : mode === 'magic-link'
-                ? 'Send Magic Link'
-                : 'Send Reset Link'}
+            : 'Sign In'}
       </button>
 
+      {/* DEV BYPASS BUTTON */}
       {process.env.NODE_ENV === 'development' && mode === 'login' && (
         <button
           type="button"
-          onClick={async (e) => {
-            e.preventDefault();
-            setEmail('admin@automatemomentum.com');
-            setPassword('password123');
-            // we need to set the state and then call the api immediately
-            // because setState is async
+          onClick={() => {
             setLoading(true);
-            setError(null);
-            setMessage(null);
-            const { error: signInError } = await supabase.auth.signInWithPassword({
-              email: 'admin@automatemomentum.com',
-              password: 'password123',
-            });
-            if (signInError) {
-              setError('Failed to auto-login. Did you run the set-dev-password script?');
-              setLoading(false);
-              return;
-            }
+            console.warn("Emulating headless admin auth bypass natively.");
+            document.cookie = "sb-dev-bypass-token=admin-override; path=/; max-age=3600";
             router.push('/dashboard');
             router.refresh();
           }}
-          className="w-full mt-2 py-2 px-4 bg-green-600 text-white font-medium rounded-md hover:bg-green-700 transition-colors"
+          disabled={loading}
+          className="w-full mt-4 py-2 px-4 bg-emerald-600 text-white font-bold rounded-md hover:bg-emerald-700 transition-colors shadow shadow-emerald-600/20"
         >
-          🚀 Local Dev: Auto-Login as Admin
+          🚀 1-Click Dev Bypass (Admin)
         </button>
       )}
     </form>
