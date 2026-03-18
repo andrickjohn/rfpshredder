@@ -332,7 +332,7 @@ export function UploadForm({ canShred, isTrialExhausted, isSuperAdmin = false }:
     if (droppedFile) handleFileSelect(droppedFile);
   }
 
-  if (!canShred) {
+  if (!canShred && !isSuperAdmin) {
     return (
       <div className="bg-white rounded-xl border border-gray-200 shadow-sm p-8 text-center">
         <h3 className="text-lg font-semibold text-gray-900 mb-2">
