@@ -1,5 +1,5 @@
 // src/app/(auth)/auth/callback/route.ts
-// Purpose: Handles magic link + OAuth callbacks from Supabase
+// Purpose: Handles OAuth callbacks and reset flows from Supabase
 // Dependencies: @supabase/ssr, next/server
 // Test spec: qa/test-specs/auth.md
 

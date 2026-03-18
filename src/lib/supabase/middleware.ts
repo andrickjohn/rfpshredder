@@ -56,6 +56,12 @@ export async function updateSession(request: NextRequest) {
     data: { user },
   } = await supabase.auth.getUser();
   if (!user && isProtectedRoute) {
+    // DEV BYPASS: Check headless override native cookie locally
+    const devBypassCookie = request.cookies.get('sb-dev-bypass-token');
+    if (process.env.NODE_ENV === 'development' && devBypassCookie?.value === 'admin-override') {
+      return supabaseResponse;
+    }
+
     const url = request.nextUrl.clone();
     url.pathname = '/login';
     return NextResponse.redirect(url);

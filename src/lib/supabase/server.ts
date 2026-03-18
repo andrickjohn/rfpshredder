@@ -9,7 +9,7 @@ import { cookies } from 'next/headers';
 export async function createClient() {
   const cookieStore = await cookies();
 
-  return createServerClient(
+  const client = createServerClient(
     process.env.NEXT_PUBLIC_SUPABASE_URL!,
     process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY!,
     {
@@ -30,4 +30,27 @@ export async function createClient() {
       },
     }
   );
+
+  // DEV BYPASS: Override auth.getUser so layout and server components treat us as logged in
+  if (process.env.NODE_ENV === 'development' && cookieStore.get('sb-dev-bypass-token')?.value === 'admin-override') {
+    const originalGetUser = client.auth.getUser.bind(client.auth);
+    client.auth.getUser = async () => {
+      // Mocked local user
+      return {
+        data: {
+          user: {
+            id: 'dev-bypass-local-uuid',
+            app_metadata: {},
+            user_metadata: { full_name: 'Local Dev Admin' },
+            aud: 'authenticated',
+            created_at: new Date().toISOString(),
+            email: 'admin@rfpshredder.local',
+          }
+        },
+        error: null
+      } as any;
+    };
+  }
+
+  return client;
 }
