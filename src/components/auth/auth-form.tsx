@@ -36,6 +36,7 @@ export function AuthForm({ mode }: AuthFormProps) {
           password,
           options: {
             data: { full_name: fullName.trim() },
+            emailRedirectTo: `${window.location.origin}/auth/callback`,
           },
         });
         if (signUpError) {
@@ -68,6 +69,15 @@ export function AuthForm({ mode }: AuthFormProps) {
 
   const showPassword = mode === 'login' || mode === 'signup';
   const showName = mode === 'signup';
+
+  if (message && mode === 'signup') {
+    return (
+      <div className="w-full max-w-sm p-6 text-center bg-green-50 rounded-lg border border-green-200 shadow-sm">
+        <h3 className="text-lg font-semibold text-green-800 mb-2">Check your inbox</h3>
+        <p className="text-sm text-green-700">{message}</p>
+      </div>
+    );
+  }
 
   return (
     <form onSubmit={handleSubmit} className="space-y-4 w-full max-w-sm">
@@ -125,12 +135,6 @@ export function AuthForm({ mode }: AuthFormProps) {
       {error && (
         <div role="alert" className="p-3 text-sm text-red-700 bg-red-50 rounded-md">
           {error}
-        </div>
-      )}
-
-      {message && (
-        <div role="status" className="p-3 text-sm text-green-700 bg-green-50 rounded-md">
-          {message}
         </div>
       )}
 
