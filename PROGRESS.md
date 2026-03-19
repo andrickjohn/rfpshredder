@@ -98,5 +98,7 @@ Session number: 9
 - [x] Built SAM.gov API scraper (`fetch_10_rfps.ts`) with rate-limit backoff + diversity shuffle
 - [x] Collected 50+ authentic Section L/M RFPs into `samples/sam_rfps/actuals/`
 - [x] Learned & documented SAM.gov extraction architecture in LESSONS.md
+- [x] Resolved dev-bypass hanging issue by restoring authentic Supabase login flow
+- [x] Mandated programmatic UI testing (Playwright/Vitest) to enforce Visual End-State verification (Lesson 11)
 - [ ] Run full shred pipeline against the new sample corpus — verify no new crashes
-- [ ] Consider adding a "samples" admin UI to trigger test shreds from the corpus
+- [ ] Debug the local Supabase connection timeout/hang on the `rfpshredder.local` environment
